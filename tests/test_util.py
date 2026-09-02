@@ -10,9 +10,19 @@ from gramps_webapi.api import util
 from gramps_webapi.api.resources.util import (
     fix_object_dict,
     get_citation_profile_for_object,
+    get_rating,
 )
 from gramps_webapi.api.util import send_email
 from gramps_webapi.const import PRIMARY_GRAMPS_OBJECTS
+
+
+def test_get_rating_ignores_missing_extended_citation():
+    """A dangling citation reference must not break the containing object."""
+    obj = MagicMock()
+    obj.citation_list = ["missing-citation"]
+    obj.extended = {"citations": [{}]}
+
+    assert get_rating(MagicMock(), obj) == (1, 0)
 
 
 def test_fix_object_dict_localized_event_type():
