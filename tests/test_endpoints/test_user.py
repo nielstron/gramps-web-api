@@ -131,6 +131,35 @@ class TestUser(unittest.TestCase):
         )
         assert rv.status_code == 405
 
+    def test_user_settings_are_private_to_the_authenticated_user(self):
+        user_token = self.client.post(
+            BASE_URL + "/token/", json={"username": "user", "password": "123"}
+        ).json["access_token"]
+        other_token = self.client.post(
+            BASE_URL + "/token/", json={"username": "user2", "password": "123"}
+        ).json["access_token"]
+        user_header = {"Authorization": f"Bearer {user_token}"}
+        other_header = {"Authorization": f"Bearer {other_token}"}
+
+        rv = self.client.get(BASE_URL + "/users/-/settings", headers=user_header)
+        assert rv.status_code == 200
+        assert rv.json == {}
+
+        rv = self.client.put(
+            BASE_URL + "/users/-/settings",
+            headers=user_header,
+            json={"homePerson": "I0042"},
+        )
+        assert rv.status_code == 200
+        assert rv.json == {"homePerson": "I0042"}
+        assert self.client.get(
+            BASE_URL + "/users/-/settings", headers=user_header
+        ).json == {"homePerson": "I0042"}
+        assert (
+            self.client.get(BASE_URL + "/users/-/settings", headers=other_header).json
+            == {}
+        )
+
     def test_change_password_no_token(self):
         rv = self.client.post(
             BASE_URL + "/users/-/password/change",

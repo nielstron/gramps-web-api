@@ -31,6 +31,7 @@ from gramps_webapi.app import create_app
 from gramps_webapi.auth import add_user, user_db
 from gramps_webapi.auth.const import ROLE_EDITOR, ROLE_OWNER
 from gramps_webapi.const import ENV_CONFIG_FILE, TEST_EMPTY_GRAMPS_AUTH_CONFIG
+from gramps_webapi.api.resources.restore import _items_differ
 
 from .. import ExampleDbInMemory
 from . import BASE_URL, TEST_USERS
@@ -39,6 +40,20 @@ from .util import fetch_header
 
 RESTORE_URL = BASE_URL + "/importers/gramps/file/restore"
 IMPORT_URL = BASE_URL + "/importers/gramps/file"
+
+
+class TestRestoreComparison(unittest.TestCase):
+    """Regression tests for serialized objects with asymmetric fields."""
+
+    def test_missing_field_is_a_difference_in_either_direction(self):
+        with_type = {"name": {"type": "Birth Name", "first": "Ada"}}
+        without_type = {"name": {"first": "Ada"}}
+
+        self.assertTrue(_items_differ(with_type, without_type))
+        self.assertTrue(_items_differ(without_type, with_type))
+
+    def test_change_timestamp_is_ignored(self):
+        self.assertFalse(_items_differ({"change": 1}, {"change": 2}))
 
 
 class TestRestoreFile(unittest.TestCase):

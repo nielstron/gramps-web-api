@@ -161,6 +161,7 @@ from .resources.user import (
     UserRegisterResource,
     UserResetPasswordResource,
     UserResource,
+    UserSettingsResource,
     UsersResource,
     UserTriggerResetPasswordResource,
 )
@@ -605,6 +606,9 @@ register_endpt(
 # User
 register_endpt(UsersResource, "/users/", "users", tags=["Users"])
 register_endpt(UserResource, "/users/<string:user_name>/", "user", tags=["Users"])
+register_endpt(
+    UserSettingsResource, "/users/-/settings", "user_settings", tags=["Users"]
+)
 register_endpt(
     UserAccessTokenResource,
     "/users/-/access-tokens/<string:scope>/",

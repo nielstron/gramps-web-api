@@ -42,7 +42,9 @@ from ...auth import (
     get_pwhash,
     get_user_details,
     get_user_oidc_accounts,
+    get_user_settings,
     modify_user,
+    set_user_settings,
     user_db,
 )
 from ...auth.oidc_helpers import is_oidc_enabled
@@ -126,6 +128,27 @@ class UsersListArgsSchema(Schema):
         load_default=None,
         metadata={"description": "Filter to a single user by their UUID."},
     )
+
+
+class UserSettingsArgsSchema(Schema):
+    """Private settings that belong to the authenticated user."""
+
+    homePerson = fields.Str(allow_none=True)
+
+
+class UserSettingsResource(ProtectedResource):
+    """Read and replace settings for the authenticated user."""
+
+    def get(self):
+        """Get the current user's private settings."""
+        return jsonify(get_user_settings(get_jwt_identity()))
+
+    @api_blueprint.arguments(UserSettingsArgsSchema, location="json")
+    def put(self, args):
+        """Replace the current user's private settings."""
+        user_id = get_jwt_identity()
+        set_user_settings(user_id, args)
+        return jsonify(args)
 
 
 class UsersResource(ProtectedResource):

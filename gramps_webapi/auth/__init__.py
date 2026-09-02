@@ -148,6 +148,27 @@ def get_tree(guid: str) -> Optional[str]:
     return tree
 
 
+def get_user_settings(guid: str) -> Dict[str, Any]:
+    """Get the private settings blob for a user."""
+    try:
+        query = user_db.session.query(User.settings)  # pylint: disable=no-member
+        settings = query.filter_by(id=guid).scalar()
+    except StatementError as exc:
+        raise ValueError(f"User ID {guid} not found") from exc
+    return settings or {}
+
+
+def set_user_settings(guid: str, settings: Dict[str, Any]) -> None:
+    """Replace the private settings blob for a user."""
+    query = user_db.session.query(User)  # pylint: disable=no-member
+    user = query.filter_by(id=guid).scalar()
+    if user is None:
+        raise ValueError(f"User ID {guid} not found")
+    user.settings = settings
+    user_db.session.add(user)  # pylint: disable=no-member
+    user_db.session.commit()  # pylint: disable=no-member
+
+
 def delete_user(name: str) -> None:
     """Delete an existing user and their associated OIDC accounts."""
     query = user_db.session.query(User)  # pylint: disable=no-member
@@ -651,6 +672,7 @@ class User(user_db.Model):  # type: ignore
     pwhash = mapped_column(sa.String, nullable=False)
     role = mapped_column(sa.Integer, default=0)
     tree = mapped_column(sa.String, index=True)
+    settings = mapped_column(sa.JSON, nullable=True)
 
     def __repr__(self):
         """Return string representation of instance."""

@@ -35,8 +35,8 @@ from gramps.gen.config import config
 from gramps.gen.db import DbTxn, DbWriteBase
 from gramps.gen.db.base import DbReadBase
 from gramps.gen.db.utils import make_database
-from gramps.gen.merge.diff import diff_dbs
-from gramps.gen.user import User
+from gramps.gen.lib.json_utils import object_to_dict
+from gramps.gen.merge.diff import diff_dates
 
 from ...const import GRAMPS_OBJECT_PLURAL
 from .util import run_import
@@ -54,6 +54,49 @@ class ResetChangeset:
     to_add: list[tuple[str, object]] = field(default_factory=list)
     to_update: list[tuple[str, object]] = field(default_factory=list)
     to_delete: list[tuple[str, str]] = field(default_factory=list)
+
+
+def _items_differ(value1, value2, key: str = "") -> bool:
+    """Compare serialized Gramps values without assuming identical dict keys."""
+    if value1 == value2:
+        return False
+    if key == "date":
+        return diff_dates(value1, value2)
+    if isinstance(value1, list) and isinstance(value2, list):
+        return len(value1) != len(value2) or any(
+            _items_differ(item1, item2) for item1, item2 in zip(value1, value2)
+        )
+    if isinstance(value1, dict) and isinstance(value2, dict):
+        keys1 = set(value1) - {"change"}
+        keys2 = set(value2) - {"change"}
+        if keys1 != keys2:
+            return True
+        return any(_items_differ(value1[item], value2[item], item) for item in keys1)
+    return True
+
+
+def _diff_dbs(db1: DbReadBase, db2: DbReadBase):
+    """Return Gramps database differences with symmetric dictionary handling."""
+    diffs = []
+    missing_from_old = []
+    missing_from_new = []
+    for class_name in GRAMPS_OBJECT_PLURAL:
+        handles1 = set(db1.method("get_%s_handles", class_name)())
+        handles2 = set(db2.method("get_%s_handles", class_name)())
+        get1 = db1.method("get_%s_from_handle", class_name)
+        get2 = db2.method("get_%s_from_handle", class_name)
+        for handle in sorted(handles1 & handles2):
+            item1 = get1(handle)
+            item2 = get2(handle)
+            if _items_differ(object_to_dict(item1), object_to_dict(item2)):
+                diffs.append((class_name, item1, item2))
+        missing_from_new.extend(
+            (class_name, get1(handle)) for handle in sorted(handles1 - handles2)
+        )
+        missing_from_old.extend(
+            (class_name, get2(handle)) for handle in sorted(handles2 - handles1)
+        )
+    return diffs, missing_from_old, missing_from_new
 
 
 def load_backup_db(file_name: str, extension: str) -> DbReadBase:
@@ -98,7 +141,7 @@ def compute_reset_changeset(
     missing from the backup (present only in the live tree). For a reset these
     map directly onto update / add / delete.
     """
-    diffs, missing_from_old, missing_from_new = diff_dbs(db_handle, backup_db, User())
+    diffs, missing_from_old, missing_from_new = _diff_dbs(db_handle, backup_db)
     changeset = ResetChangeset()
     # objects in both but with differing content -> overwrite with backup version
     for class_name, _live_obj, backup_obj in diffs:
