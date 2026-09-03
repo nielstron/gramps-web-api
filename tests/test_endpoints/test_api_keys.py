@@ -34,7 +34,8 @@ class TestApiKeys(unittest.TestCase):
         self.header = fetch_header(self.client, role=ROLE_OWNER)
 
     def tearDown(self):
-        modify_user("owner", role=ROLE_OWNER)
+        with self.client.application.app_context():
+            modify_user("owner", role=ROLE_OWNER)
 
     def _create_key(self, name="Automation", days=30):
         expires_on = datetime.date.today() + datetime.timedelta(days=days)
@@ -110,7 +111,8 @@ class TestApiKeys(unittest.TestCase):
 
     def test_disabled_user_api_key_is_rejected(self):
         created = self._create_key().json
-        modify_user("owner", role=ROLE_DISABLED)
+        with self.client.application.app_context():
+            modify_user("owner", role=ROLE_DISABLED)
         key_header = {"Authorization": f"Bearer {created['token']}"}
         rv = self.client.get(BASE_URL + "/people/?pagesize=1", headers=key_header)
         self.assertEqual(rv.status_code, 401)
