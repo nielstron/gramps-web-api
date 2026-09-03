@@ -29,7 +29,7 @@ import os
 import smtplib
 import socket
 from email.message import EmailMessage
-from email.utils import formatdate, make_msgid
+from email.utils import formataddr, formatdate, make_msgid, parseaddr
 from http import HTTPStatus
 from typing import Any, BinaryIO, NoReturn, Optional, Sequence
 
@@ -594,6 +594,10 @@ def send_email(
     msg["Subject"] = subject
     if not from_email:
         from_email = get_config("DEFAULT_FROM_EMAIL")
+        from_name = get_config("DEFAULT_FROM_NAME")
+        if from_name:
+            _existing_name, address = parseaddr(from_email)
+            from_email = formataddr((from_name, address))
     msg["From"] = from_email
     msg["To"] = ", ".join(to)
     msg["Message-ID"] = make_msgid()

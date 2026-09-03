@@ -171,6 +171,7 @@ def mock_get_config():
         "EMAIL_HOST_USER": "user@example.com",
         "EMAIL_HOST_PASSWORD": "password",
         "DEFAULT_FROM_EMAIL": "noreply@example.com",
+        "DEFAULT_FROM_NAME": "",
         "EMAIL_USE_SSL": None,
         "EMAIL_USE_STARTTLS": None,
         "EMAIL_USE_TLS": True,
@@ -194,6 +195,22 @@ def test_send_email_uses_smtp_ssl(mock_smtp, mock_smtp_ssl, mock_get_config):
         send_email("Subject", "Body", ["test@example.com"])
     mock_smtp_ssl.assert_called_once()
     mock_smtp.assert_not_called()
+
+
+@patch("gramps_webapi.api.util.smtplib.SMTP_SSL")
+def test_send_email_uses_configured_sender_name(mock_smtp_ssl, mock_get_config):
+    """The optional sender name is combined with the configured address."""
+    mock_get_config["EMAIL_USE_SSL"] = True
+    mock_get_config["EMAIL_PORT"] = "465"
+    mock_get_config["DEFAULT_FROM_NAME"] = "Bond family"
+    mock_smtp_instance = MagicMock()
+    mock_smtp_ssl.return_value = mock_smtp_instance
+
+    with patch("gramps_webapi.api.util.current_app", MagicMock()):
+        send_email("Subject", "Body", ["test@example.com"])
+
+    message = mock_smtp_instance.send_message.call_args.args[0]
+    assert message["From"] == "Bond family <noreply@example.com>"
 
 
 @patch("gramps_webapi.api.util.smtplib.SMTP_SSL")

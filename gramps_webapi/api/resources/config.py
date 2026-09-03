@@ -95,6 +95,7 @@ class EmailConfigArgs(Schema):
     username = fields.Str(required=True)
     password = fields.Str(load_default=None, allow_none=True)
     from_email = fields.Str(required=True)
+    from_name = fields.Str(required=True)
     security = fields.Str(
         required=True,
         validate=validate.OneOf(["ssl", "starttls", "none"]),
@@ -122,6 +123,7 @@ def _get_email_config() -> dict:
         "port": port,
         "username": get_config("EMAIL_HOST_USER") or "",
         "from_email": get_config("DEFAULT_FROM_EMAIL") or "",
+        "from_name": get_config("DEFAULT_FROM_NAME") or "",
         "security": security,
         "password_set": bool(get_config("EMAIL_HOST_PASSWORD")),
     }
@@ -143,6 +145,7 @@ class EmailConfigResource(ProtectedResource):
         config_set("EMAIL_PORT", str(args["port"]))
         config_set("EMAIL_HOST_USER", args["username"])
         config_set("DEFAULT_FROM_EMAIL", args["from_email"])
+        config_set("DEFAULT_FROM_NAME", args["from_name"])
         config_set("EMAIL_USE_SSL", str(args["security"] == "ssl").lower())
         config_set("EMAIL_USE_STARTTLS", str(args["security"] == "starttls").lower())
         if args["password"] is not None:

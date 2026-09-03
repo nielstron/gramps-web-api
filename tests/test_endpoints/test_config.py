@@ -192,6 +192,7 @@ class TestConfig(unittest.TestCase):
             "port": 465,
             "username": "",
             "from_email": "",
+            "from_name": "",
             "security": "ssl",
             "password_set": True,
         }
@@ -208,6 +209,7 @@ class TestConfig(unittest.TestCase):
                 "username": "mailer",
                 "password": "secret",
                 "from_email": "family@example.com",
+                "from_name": "Bond family",
                 "security": "starttls",
             },
         )
@@ -223,6 +225,7 @@ class TestConfig(unittest.TestCase):
             "port": 587,
             "username": "mailer",
             "from_email": "family@example.com",
+            "from_name": "Bond family",
             "security": "starttls",
             "password_set": True,
         }

@@ -51,6 +51,7 @@ class DefaultConfig(object):
     EMAIL_USE_SSL = None
     EMAIL_USE_STARTTLS = None
     DEFAULT_FROM_EMAIL = ""
+    DEFAULT_FROM_NAME = ""
     BASE_URL = "http://localhost/"
     CORS_EXPOSE_HEADERS = ["X-Total-Count"]
     STATIC_PATH = "static"
