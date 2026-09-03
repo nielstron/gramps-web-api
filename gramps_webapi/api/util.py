@@ -653,6 +653,8 @@ def get_config(key: str) -> Any:
     if key in DB_CONFIG_ALLOWED_KEYS:
         val = config_get(key)
         if val is not None:
+            if key in {"EMAIL_USE_SSL", "EMAIL_USE_STARTTLS"}:
+                return val.lower() == "true"
             return val
     return current_app.config.get(key)
 

@@ -169,3 +169,72 @@ class TestConfig(unittest.TestCase):
         from_email, host = get_from_host()
         assert from_email == "from@example.com"
         assert host == "https://www.example.com"
+
+    def test_email_config(self):
+        rv = self.client.get(
+            f"{BASE_URL}/config/email/",
+            headers=self.header_member,
+        )
+        assert rv.status_code == 403
+
+        self.client.put(
+            f"{BASE_URL}/config/EMAIL_HOST_PASSWORD/",
+            headers=self.header_owner,
+            json={"value": "secret"},
+        )
+        rv = self.client.get(
+            f"{BASE_URL}/config/email/",
+            headers=self.header_owner,
+        )
+        assert rv.status_code == 200
+        assert rv.json == {
+            "host": "localhost",
+            "port": 465,
+            "username": "",
+            "from_email": "",
+            "security": "ssl",
+            "password_set": True,
+        }
+        assert "password" not in rv.json
+
+    @patch("gramps_webapi.api.resources.config.send_email")
+    def test_update_email_config_and_send_test(self, mock_send_email):
+        rv = self.client.put(
+            f"{BASE_URL}/config/email/",
+            headers=self.header_owner,
+            json={
+                "host": "smtp.example.com",
+                "port": 587,
+                "username": "mailer",
+                "password": "secret",
+                "from_email": "family@example.com",
+                "security": "starttls",
+            },
+        )
+        assert rv.status_code == 200
+
+        rv = self.client.get(
+            f"{BASE_URL}/config/email/",
+            headers=self.header_owner,
+        )
+        assert rv.status_code == 200
+        assert rv.json == {
+            "host": "smtp.example.com",
+            "port": 587,
+            "username": "mailer",
+            "from_email": "family@example.com",
+            "security": "starttls",
+            "password_set": True,
+        }
+
+        rv = self.client.post(
+            f"{BASE_URL}/config/email/test/",
+            headers=self.header_owner,
+            json={"recipient": "admin@example.com"},
+        )
+        assert rv.status_code == 200
+        mock_send_email.assert_called_once_with(
+            subject="Gramps Web test email",
+            body="This is a test email sent from the Gramps Web administration settings.",
+            to=["admin@example.com"],
+        )

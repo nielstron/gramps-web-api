@@ -17,18 +17,20 @@
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 #
 
-"""User administration resources."""
+"""Server configuration resources."""
 
+import smtplib
 
-from flask import abort, current_app, jsonify
+from flask import abort, jsonify
 from marshmallow import Schema
-from webargs import fields
+from webargs import fields, validate
 
 from ...auth import config_delete, config_get, config_get_all, config_set
 from ...auth.const import PERM_EDIT_SETTINGS, PERM_VIEW_SETTINGS
 from ...const import DB_CONFIG_ALLOWED_KEYS
 from ..auth import require_permissions
 from ..blueprint import api_blueprint
+from ..util import _resolve_smtp_config, get_config, send_email
 from . import ProtectedResource
 
 
@@ -83,3 +85,89 @@ class ConfigResource(ProtectedResource):
             abort(404)
         config_delete(key=key)
         return "", 200
+
+
+class EmailConfigArgs(Schema):
+    """Request body for PUT /config/email/."""
+
+    host = fields.Str(required=True)
+    port = fields.Int(required=True, validate=validate.Range(min=1, max=65535))
+    username = fields.Str(required=True)
+    password = fields.Str(load_default=None, allow_none=True)
+    from_email = fields.Str(required=True)
+    security = fields.Str(
+        required=True,
+        validate=validate.OneOf(["ssl", "starttls", "none"]),
+    )
+
+
+class EmailTestArgs(Schema):
+    """Request body for POST /config/email/test/."""
+
+    recipient = fields.Email(required=True)
+
+
+def _get_email_config() -> dict:
+    """Return the effective email configuration without its password."""
+    port = int(get_config("EMAIL_PORT"))
+    use_ssl, use_starttls = _resolve_smtp_config(
+        get_config("EMAIL_USE_SSL"),
+        get_config("EMAIL_USE_STARTTLS"),
+        get_config("EMAIL_USE_TLS"),
+        port,
+    )
+    security = "ssl" if use_ssl else "starttls" if use_starttls else "none"
+    return {
+        "host": get_config("EMAIL_HOST") or "",
+        "port": port,
+        "username": get_config("EMAIL_HOST_USER") or "",
+        "from_email": get_config("DEFAULT_FROM_EMAIL") or "",
+        "security": security,
+        "password_set": bool(get_config("EMAIL_HOST_PASSWORD")),
+    }
+
+
+class EmailConfigResource(ProtectedResource):
+    """Administration resource for SMTP settings."""
+
+    def get(self):
+        """Get the effective SMTP settings without returning the password."""
+        require_permissions([PERM_VIEW_SETTINGS])
+        return jsonify(_get_email_config()), 200
+
+    @api_blueprint.arguments(EmailConfigArgs, location="json")
+    def put(self, args):
+        """Update the persisted SMTP settings."""
+        require_permissions([PERM_EDIT_SETTINGS])
+        config_set("EMAIL_HOST", args["host"])
+        config_set("EMAIL_PORT", str(args["port"]))
+        config_set("EMAIL_HOST_USER", args["username"])
+        config_set("DEFAULT_FROM_EMAIL", args["from_email"])
+        config_set("EMAIL_USE_SSL", str(args["security"] == "ssl").lower())
+        config_set("EMAIL_USE_STARTTLS", str(args["security"] == "starttls").lower())
+        if args["password"] is not None:
+            config_set("EMAIL_HOST_PASSWORD", args["password"])
+        elif not args["username"]:
+            config_set("EMAIL_HOST_PASSWORD", "")
+        return jsonify(_get_email_config()), 200
+
+
+class EmailTestResource(ProtectedResource):
+    """Administration resource for testing the SMTP configuration."""
+
+    @api_blueprint.arguments(EmailTestArgs, location="json")
+    def post(self, args):
+        """Send a test email using the current SMTP settings."""
+        require_permissions([PERM_EDIT_SETTINGS])
+        try:
+            send_email(
+                subject="Gramps Web test email",
+                body=(
+                    "This is a test email sent from the Gramps Web "
+                    "administration settings."
+                ),
+                to=[args["recipient"]],
+            )
+        except (ValueError, smtplib.SMTPException) as error:
+            abort(502, description=str(error))
+        return jsonify({"message": "Test email sent."}), 200

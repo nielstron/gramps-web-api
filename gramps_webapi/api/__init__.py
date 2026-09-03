@@ -40,7 +40,12 @@ from .resources.bookmarks import (
 )
 from .resources.chat import ChatResource
 from .resources.citations import CitationResource, CitationsResource
-from .resources.config import ConfigResource, ConfigsResource
+from .resources.config import (
+    ConfigResource,
+    ConfigsResource,
+    EmailConfigResource,
+    EmailTestResource,
+)
 from .resources.dna import DnaMatchParserResource, PersonDnaMatchesResource
 from .resources.events import EventResource, EventSpanResource, EventsResource
 from .resources.export_media import MediaArchiveFileResource, MediaArchiveResource
@@ -662,6 +667,13 @@ register_endpt(ChatResource, "/chat/", "chat", tags=["Chat"])
 
 # Config
 register_endpt(ConfigsResource, "/config/", "configs", tags=["Config"])
+register_endpt(EmailConfigResource, "/config/email/", "email_config", tags=["Config"])
+register_endpt(
+    EmailTestResource,
+    "/config/email/test/",
+    "email_config_test",
+    tags=["Config"],
+)
 register_endpt(ConfigResource, "/config/<string:key>/", "config", tags=["Config"])
 
 # Tasks
