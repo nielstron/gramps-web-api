@@ -32,6 +32,7 @@ from .cache import thumbnail_cache_decorator, tile_cache_decorator
 from .media import get_media_handler
 from .resources.access_tokens import UserAccessTokenResource
 from .resources.anniversaries import AnniversariesIcsResource
+from .resources.api_keys import UserApiKeyResource, UserApiKeysResource
 from .resources.base import Resource
 from .resources.bookmarks import (
     BookmarkEditResource,
@@ -618,6 +619,15 @@ register_endpt(
     UserAccessTokenResource,
     "/users/-/access-tokens/<string:scope>/",
     "user_access_token",
+    tags=["Users"],
+)
+register_endpt(
+    UserApiKeysResource, "/users/-/api-keys/", "user_api_keys", tags=["Users"]
+)
+register_endpt(
+    UserApiKeyResource,
+    "/users/-/api-keys/<string:api_key_id>/",
+    "user_api_key",
     tags=["Users"],
 )
 register_endpt(

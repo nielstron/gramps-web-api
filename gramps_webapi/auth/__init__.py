@@ -22,8 +22,8 @@
 
 import secrets
 import uuid
+from datetime import date, datetime, time, timedelta
 from hashlib import sha256
-from datetime import datetime
 from typing import Any, Dict, List, Optional, Sequence, Set, Union
 
 import sqlalchemy as sa
@@ -33,12 +33,11 @@ from sqlalchemy.exc import IntegrityError, StatementError
 from sqlalchemy.orm import mapped_column
 from sqlalchemy.sql.functions import coalesce
 
-
 from ..const import DB_CONFIG_ALLOWED_KEYS
 from .const import (
     ACCESS_TOKEN_SCOPES,
-    PERMISSIONS,
     PERM_USE_CHAT,
+    PERMISSIONS,
     ROLE_ADMIN,
     ROLE_OWNER,
 )
@@ -371,6 +370,136 @@ def get_user_from_access_token(token: str, scope: str) -> Optional["User"]:
         )
         .scalar()
     )
+
+
+def _serialize_api_key(api_key: "ApiKey") -> Dict[str, Any]:
+    """Serialize API-key metadata without exposing the credential."""
+    return {
+        "id": str(api_key.id),
+        "name": api_key.name,
+        "fingerprint": api_key.fingerprint,
+        "created_at": api_key.created_at,
+        "expires_at": api_key.expires_at,
+        "expires_on": (api_key.expires_at - timedelta(days=1)).date(),
+    }
+
+
+def list_user_api_keys(username: str) -> List[Dict[str, Any]]:
+    """Return non-revoked API keys belonging to a user."""
+    user = (
+        user_db.session.query(User).filter_by(name=username).scalar()
+    )  # pylint: disable=no-member
+    if user is None:
+        raise ValueError("User does not exist")
+    rows = (
+        user_db.session.query(ApiKey)  # pylint: disable=no-member
+        .filter(ApiKey.user_id == user.id, ApiKey.revoked_at.is_(None))
+        .order_by(ApiKey.created_at.desc())
+        .all()
+    )
+    return [_serialize_api_key(row) for row in rows]
+
+
+def create_user_api_key(
+    username: str, name: str, expires_on: date
+) -> tuple[Dict[str, Any], str]:
+    """Create a full-API JWT and return its metadata and one-time value."""
+    from flask_jwt_extended import create_access_token, decode_token
+
+    normalized_name = name.strip()
+    if not normalized_name:
+        raise ValueError("API key name must not be empty")
+    if len(normalized_name) > 128:
+        raise ValueError("API key name must not exceed 128 characters")
+
+    now = datetime.utcnow()
+    expires_at = datetime.combine(expires_on + timedelta(days=1), time.min)
+    if expires_at <= now:
+        raise ValueError("API key expiry date must be in the future")
+
+    user = (
+        user_db.session.query(User).filter_by(name=username).scalar()
+    )  # pylint: disable=no-member
+    if user is None:
+        raise ValueError("User does not exist")
+    if user.role < 0:
+        raise ValueError("Disabled users cannot create API keys")
+    if not user.tree:
+        raise ValueError("API keys require an assigned family tree")
+
+    api_key = ApiKey(
+        id=uuid.uuid4(),
+        user_id=user.id,
+        name=normalized_name,
+        jti="pending",
+        fingerprint="pending",
+        expires_at=expires_at,
+    )
+    user_db.session.add(api_key)  # pylint: disable=no-member
+    user_db.session.flush()  # pylint: disable=no-member
+
+    claims = {
+        "api_key_id": str(api_key.id),
+        "permissions": list(get_permissions(username=username, tree=user.tree)),
+        "tree": user.tree,
+    }
+    token = create_access_token(
+        identity=str(user.id),
+        additional_claims=claims,
+        expires_delta=expires_at - now,
+        fresh=False,
+    )
+    api_key.jti = decode_token(token)["jti"]
+    api_key.fingerprint = sha256(token.encode("utf-8")).hexdigest()[:12]
+    user_db.session.commit()  # pylint: disable=no-member
+    return _serialize_api_key(api_key), token
+
+
+def revoke_user_api_key(username: str, api_key_id: str) -> bool:
+    """Revoke one API key belonging to the named user."""
+    user = (
+        user_db.session.query(User).filter_by(name=username).scalar()
+    )  # pylint: disable=no-member
+    if user is None:
+        raise ValueError("User does not exist")
+    api_key = (
+        user_db.session.query(ApiKey)  # pylint: disable=no-member
+        .filter_by(id=api_key_id, user_id=user.id)
+        .scalar()
+    )
+    if api_key is None or api_key.revoked_at is not None:
+        return False
+    api_key.revoked_at = datetime.utcnow()
+    user_db.session.commit()  # pylint: disable=no-member
+    return True
+
+
+def get_api_key_auth_context(api_key_id: str, jti: str) -> Optional[Dict[str, Any]]:
+    """Return current user context if an API-key claim is still valid."""
+    now = datetime.utcnow()
+    row = (
+        user_db.session.query(ApiKey, User)  # pylint: disable=no-member
+        .join(User, ApiKey.user_id == User.id)
+        .filter(
+            ApiKey.id == api_key_id,
+            ApiKey.jti == jti,
+            ApiKey.revoked_at.is_(None),
+            ApiKey.expires_at > now,
+            User.role >= 0,
+        )
+        .first()
+    )
+    if row is None:
+        return None
+    api_key, user = row
+    if not user.tree or is_tree_disabled(user.tree):
+        return None
+    return {
+        "api_key_id": str(api_key.id),
+        "user_id": str(user.id),
+        "tree": user.tree,
+        "permissions": list(get_permissions(username=user.name, tree=user.tree)),
+    }
 
 
 def get_all_user_details(
@@ -708,6 +837,34 @@ class AccessToken(user_db.Model):  # type: ignore
         return (
             f"<AccessToken(user_id='{self.user_id}', scope='{self.scope}', "
             f"revoked_at='{self.revoked_at}')>"
+        )
+
+
+class ApiKey(user_db.Model):  # type: ignore
+    """A revocable, expiring JWT for full REST API access."""
+
+    __tablename__ = "api_keys"
+
+    id = mapped_column(GUID, primary_key=True)
+    user_id = mapped_column(
+        GUID, sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    name = mapped_column(sa.String(128), nullable=False)
+    jti = mapped_column(sa.String(36), nullable=False)
+    fingerprint = mapped_column(sa.String(12), nullable=False)
+    created_at = mapped_column(
+        sa.DateTime, nullable=False, server_default=sa.func.now()
+    )
+    expires_at = mapped_column(sa.DateTime, nullable=False, index=True)
+    revoked_at = mapped_column(sa.DateTime, nullable=True)
+
+    __table_args__ = (sa.Index("ix_api_keys_jti", "jti", unique=True),)
+
+    def __repr__(self):
+        """Return string representation of instance."""
+        return (
+            f"<ApiKey(user_id='{self.user_id}', name='{self.name}', "
+            f"expires_at='{self.expires_at}', revoked_at='{self.revoked_at}')>"
         )
 
 

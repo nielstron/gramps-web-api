@@ -26,7 +26,20 @@ from flask import abort
 from flask_jwt_extended import get_jwt, verify_jwt_in_request
 from flask_jwt_extended.exceptions import NoAuthorizationError
 
+from ..auth import get_api_key_auth_context
 from ..auth.const import CLAIM_LIMITED_SCOPE
+
+
+def _refresh_api_key_claims(claims: dict) -> None:
+    """Replace API-key claims with the user's current tree and permissions."""
+    api_key_id = claims.get("api_key_id")
+    if not api_key_id:
+        return
+    context = get_api_key_auth_context(api_key_id, claims.get("jti", ""))
+    if context is None or context["user_id"] != claims.get("sub"):
+        raise NoAuthorizationError("API key is no longer valid")
+    claims["tree"] = context["tree"]
+    claims["permissions"] = context["permissions"]
 
 
 def jwt_required(func):
@@ -39,6 +52,7 @@ def jwt_required(func):
     def wrapper(*args, **kwargs):
         verify_jwt_in_request()
         claims = get_jwt()
+        _refresh_api_key_claims(claims)
         if claims.get(CLAIM_LIMITED_SCOPE):
             raise NoAuthorizationError
         return func(*args, **kwargs)
