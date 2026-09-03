@@ -185,3 +185,50 @@ class TestRelationsAll(unittest.TestCase):
             self, TEST_URL + "9BXKQC1PVLPYFMD6IX/ORFKQC4KLWEGTGR19L/all?locale=de"
         )
         self.assertEqual(rv[0]["relationship_string"], "Stief-/Adoptivalttante")
+
+
+class TestRelationPath(unittest.TestCase):
+    """Test cases for arbitrary paths through the family graph."""
+
+    @classmethod
+    def setUpClass(cls):
+        """Test class setup."""
+        cls.client = get_test_client()
+
+    def test_get_partner_path_expected_result(self):
+        """Partners are connected even without following a blood line."""
+        handle1 = "cc8205d87831c772e87"
+        handle2 = "cc8205d872f532ab14e"
+
+        rv = check_success(self, f"{TEST_URL}{handle1}/{handle2}/path")
+
+        self.assertTrue(rv["connected"])
+        self.assertEqual(rv["person_handles"], [handle1, handle2])
+        self.assertEqual(len(rv["family_handles"]), 1)
+        self.assertEqual(
+            rv["steps"],
+            [
+                {
+                    "family_handle": rv["family_handles"][0],
+                    "from_handle": handle1,
+                    "relation": "partner",
+                    "to_handle": handle2,
+                }
+            ],
+        )
+
+    def test_get_same_person_path_expected_result(self):
+        """A person has a zero-step path to themselves."""
+        handle = "cc8205d87831c772e87"
+
+        rv = check_success(self, f"{TEST_URL}{handle}/{handle}/path")
+
+        self.assertEqual(
+            rv,
+            {
+                "connected": True,
+                "family_handles": [],
+                "person_handles": [handle],
+                "steps": [],
+            },
+        )

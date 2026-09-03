@@ -2027,6 +2027,29 @@ class RelationshipItemSchema(_Base):
     )
 
 
+class RelationshipPathStepSchema(_Base):
+    """One person-to-person step through a family."""
+
+    from_handle = fields.Str(required=True)
+    to_handle = fields.Str(required=True)
+    family_handle = fields.Str(required=True)
+    relation = fields.Str(
+        required=True,
+        metadata={
+            "description": "How the destination relates to the source: parent, child, partner, or sibling."
+        },
+    )
+
+
+class RelationshipPathSchema(_Base):
+    """A shortest path through the family graph."""
+
+    connected = fields.Bool(required=True)
+    person_handles = fields.List(fields.Str(), required=True)
+    family_handles = fields.List(fields.Str(), required=True)
+    steps = fields.List(fields.Nested(RelationshipPathStepSchema()), required=True)
+
+
 class ObjectCountsSchema(_Base):
     """Counts of primary object types in the database."""
 

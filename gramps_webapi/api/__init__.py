@@ -118,7 +118,11 @@ from .resources.oidc import (
 )
 from .resources.people import PeopleResource, PersonResource
 from .resources.places import PlaceResource, PlacesResource
-from .resources.relations import RelationResource, RelationsResource
+from .resources.relations import (
+    RelationPathResource,
+    RelationResource,
+    RelationsResource,
+)
 from .resources.reports import (
     ReportFileResource,
     ReportFileResultResource,
@@ -523,6 +527,12 @@ register_endpt(
     RelationsResource,
     "/relations/<string:handle1>/<string:handle2>/all",
     "relations",
+    tags=["Relations"],
+)
+register_endpt(
+    RelationPathResource,
+    "/relations/<string:handle1>/<string:handle2>/path",
+    "relation-path",
     tags=["Relations"],
 )
 # Living

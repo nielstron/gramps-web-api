@@ -29,6 +29,7 @@ from marshmallow import Schema
 from webargs import fields, validate
 
 from gramps_webapi.api.people_families_cache import CachePeopleFamiliesProxy
+from gramps_webapi.api.relation_path import find_connection_path
 
 from ...types import Handle
 from ..cache import request_cache_decorator
@@ -36,7 +37,11 @@ from ..blueprint import api_blueprint
 from ..util import abort_with_message, get_db_handle, get_locale_for_language
 from . import ProtectedResource
 from .emit import GrampsJSONEncoder
-from .schemas import RelationshipItemSchema, RelationshipSchema
+from .schemas import (
+    RelationshipItemSchema,
+    RelationshipPathSchema,
+    RelationshipSchema,
+)
 from .util import get_one_relationship
 
 
@@ -139,3 +144,21 @@ class RelationsResource(ProtectedResource, GrampsJSONEncoder):
         if result == []:
             result = [{}]
         return self.response(200, result)
+
+
+class RelationPathResource(ProtectedResource, GrampsJSONEncoder):
+    """Shortest connection through parent, child, partner, and sibling links."""
+
+    @api_blueprint.response(200, RelationshipPathSchema())
+    @request_cache_decorator
+    def get(self, handle1: Handle, handle2: Handle) -> Response:
+        """Get a shortest path through the complete family graph."""
+        db_handle = CachePeopleFamiliesProxy(get_db_handle())
+        for handle in (handle1, handle2):
+            try:
+                db_handle.get_person_from_handle(handle)
+            except HandleError:
+                abort_with_message(404, f"Person {handle} not found")
+        db_handle.cache_people()
+        db_handle.cache_families()
+        return self.response(200, find_connection_path(db_handle, handle1, handle2))
