@@ -755,6 +755,7 @@ def get_person_profile_for_object(
             else name_displayer.display(person)
         ),
         "name_suffix": person.primary_name.get_suffix(),
+        "name_title": get_person_academic_title(db_handle, person),
         "addresses": [
             {"date_str": locale.date_displayer.display(address.date)}
             for address in person.address_list
@@ -815,6 +816,36 @@ def get_person_profile_for_object(
             for handle in person.family_list
         ]
     return profile
+
+
+def get_person_academic_title(db_handle: DbReadBase, person: Person) -> str:
+    """Return the explicit name title or derive it from the latest degree event."""
+    explicit_title = person.primary_name.get_title().strip()
+    if explicit_title:
+        return explicit_title
+
+    candidates: list[tuple[int, str, str]] = []
+    for event_ref in person.event_ref_list:
+        try:
+            event = db_handle.get_event_from_handle(event_ref.ref)
+        except HandleError:
+            continue
+        if event is None or event.get_type().xml_str() not in {"Degree", "Graduation"}:
+            continue
+        for attribute in event.attribute_list:
+            if attribute.get_type().xml_str() != "Degree":
+                continue
+            value = attribute.get_value().strip()
+            if value:
+                candidates.append(
+                    (
+                        event.get_date_object().get_sort_value(),
+                        event.get_gramps_id(),
+                        value,
+                    )
+                )
+
+    return max(candidates)[2] if candidates else ""
 
 
 def get_person_profile_for_handle(

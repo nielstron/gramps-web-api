@@ -3,13 +3,14 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from gramps.gen.errors import HandleError
-from gramps.gen.lib import Citation, EventType
+from gramps.gen.lib import Attribute, Citation, Date, Event, EventRef, EventType, Person
 from gramps.gen.lib.json_utils import data_to_object
 
 from gramps_webapi.api import util
 from gramps_webapi.api.resources.util import (
     fix_object_dict,
     get_citation_profile_for_object,
+    get_person_academic_title,
     get_rating,
 )
 from gramps_webapi.api.util import send_email
@@ -23,6 +24,58 @@ def test_get_rating_ignores_missing_extended_citation():
     obj.extended = {"citations": [{}]}
 
     assert get_rating(MagicMock(), obj) == (1, 0)
+
+
+def _degree_event(handle, gramps_id, year, degree):
+    event = Event()
+    event.handle = handle
+    event.set_gramps_id(gramps_id)
+    event.set_type("Degree")
+    date = Date()
+    date.set(value=(0, 0, year, False))
+    event.set_date_object(date)
+    attribute = Attribute()
+    attribute.set_type("Degree")
+    attribute.set_value(degree)
+    event.add_attribute(attribute)
+    return event
+
+
+def test_person_academic_title_prefers_explicit_name_title():
+    person = Person()
+    person.primary_name.set_title("Prof.")
+
+    assert get_person_academic_title(MagicMock(), person) == "Prof."
+
+
+def test_person_academic_title_uses_latest_degree_event():
+    person = Person()
+    bachelor = _degree_event("event-bachelor", "E0001", 2001, "BSc")
+    doctorate = _degree_event("event-doctorate", "E0002", 2008, "Dr.")
+    for event in (doctorate, bachelor):
+        event_ref = EventRef()
+        event_ref.ref = event.handle
+        person.add_event_ref(event_ref)
+    db = MagicMock()
+    db.get_event_from_handle.side_effect = {
+        bachelor.handle: bachelor,
+        doctorate.handle: doctorate,
+    }.get
+
+    assert get_person_academic_title(db, person) == "Dr."
+
+
+def test_person_academic_title_ignores_degree_attribute_on_other_events():
+    person = Person()
+    event = _degree_event("event-birth", "E0001", 2001, "Dr.")
+    event.set_type("Birth")
+    event_ref = EventRef()
+    event_ref.ref = event.handle
+    person.add_event_ref(event_ref)
+    db = MagicMock()
+    db.get_event_from_handle.return_value = event
+
+    assert get_person_academic_title(db, person) == ""
 
 
 def test_fix_object_dict_localized_event_type():

@@ -398,6 +398,11 @@ class PersonProfileSchema(_Base):
     name_suffix = fields.Str(
         metadata={"description": "Name suffix."},
     )
+    name_title = fields.Str(
+        metadata={
+            "description": "Explicit name title, or title derived from the latest degree event."
+        },
+    )
     other_parent_families = fields.List(
         fields.Nested(lambda: FamilyProfileSchema()),
         metadata={"description": "Profiles of non-primary parent families."},
@@ -2391,6 +2396,11 @@ class TimelinePersonProfileSchema(_Base):
     )
     name_suffix = fields.Str(
         metadata={"description": "Name suffix."},
+    )
+    name_title = fields.Str(
+        metadata={
+            "description": "Explicit name title, or title derived from the latest degree event."
+        },
     )
     relationship = fields.Str(
         metadata={"description": "Relationship to the anchor person."},
