@@ -43,6 +43,7 @@ from .base import (
 from .emit import GrampsJSONEncoder
 from .schemas import SpanSchema
 from .util import (
+    format_span,
     get_event_profile_for_object,
     get_extended_attributes,
     get_place_by_handle,
@@ -128,9 +129,10 @@ class EventSpanResource(ProtectedResource, GrampsJSONEncoder):
             abort(404)
 
         locale = get_locale_for_language(args["locale"], default=True)
-        span = (
-            Span(event1.date, event2.date)
-            .format(precision=args["precision"], as_age=args["as_age"], dlocale=locale)
-            .strip("()")
+        span = format_span(
+            Span(event1.date, event2.date),
+            precision=args["precision"],
+            as_age=args["as_age"],
+            locale=locale,
         )
         return self.response(200, {"span": str(span)})

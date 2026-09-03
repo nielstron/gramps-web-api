@@ -39,6 +39,7 @@ from gramps.gen.utils.grampslocale import GrampsLocale
 from marshmallow import Schema
 from webargs import fields, validate
 
+from ...const import NAME_FORMAT_REGEXP
 from ...types import Handle
 from ..blueprint import api_blueprint
 from ..util import get_db_handle, get_locale_for_language
@@ -46,9 +47,9 @@ from . import ProtectedResource
 from .emit import GrampsJSONEncoder
 from .filters import apply_filter
 from .schemas import TimelineEventProfileSchema
-from ...const import NAME_FORMAT_REGEXP
 from .util import (
     display_date,
+    format_span,
     get_person_profile_for_object,
     get_place_profile_for_object,
     get_rating,
@@ -226,10 +227,10 @@ class Timeline:
         if start_date:
             span = Span(start_date, date)
             if span.is_valid():
-                age = str(
-                    span.format(precision=self.precision, dlocale=self.locale).strip(
-                        "()"
-                    )
+                age = format_span(
+                    span,
+                    precision=self.precision,
+                    locale=self.locale,
                 )
         return age
 

@@ -3,15 +3,33 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from gramps.gen.errors import HandleError
-from gramps.gen.lib import Attribute, Citation, Date, Event, EventRef, EventType, Person
+from gramps.gen.lib import (
+    Attribute,
+    ChildRef,
+    Citation,
+    Date,
+    Event,
+    EventRef,
+    EventRoleType,
+    EventType,
+    Family,
+    FamilyRelType,
+    NameType,
+    Person,
+    PlaceType,
+    Span,
+)
 from gramps.gen.lib.json_utils import data_to_object
 
 from gramps_webapi.api import util
 from gramps_webapi.api.resources.util import (
+    add_family_update_refs,
     fix_object_dict,
+    format_span,
     get_citation_profile_for_object,
     get_person_academic_title,
     get_rating,
+    update_family_update_refs,
 )
 from gramps_webapi.api.util import send_email
 from gramps_webapi.const import PRIMARY_GRAMPS_OBJECTS
@@ -114,6 +132,130 @@ def test_fix_object_dict_custom_event_type():
     event_dict = {"_class": "Event", "type": "MyCustomEvent"}
     result = fix_object_dict(event_dict, "Event")
     assert result["type"]["value"] == 0
+
+
+@pytest.mark.parametrize(
+    "object_dict,path,expected",
+    [
+        (
+            {"_class": "Event", "type": {"_class": "EventType", "string": "Death"}},
+            ("type",),
+            EventType.DEATH,
+        ),
+        (
+            {
+                "_class": "Family",
+                "type": {"_class": "FamilyRelType", "string": "Married"},
+            },
+            ("type",),
+            FamilyRelType.MARRIED,
+        ),
+        (
+            {
+                "_class": "Person",
+                "primary_name": {
+                    "_class": "Name",
+                    "type": {"_class": "NameType", "string": "Married Name"},
+                },
+            },
+            ("primary_name", "type"),
+            NameType.MARRIED,
+        ),
+        (
+            {
+                "_class": "Place",
+                "place_type": {"_class": "PlaceType", "string": "City"},
+            },
+            ("place_type",),
+            PlaceType.CITY,
+        ),
+        (
+            {
+                "_class": "Person",
+                "event_ref_list": [
+                    {
+                        "_class": "EventRef",
+                        "ref": "event-handle",
+                        "role": {
+                            "_class": "EventRoleType",
+                            "string": "Primary",
+                        },
+                    }
+                ],
+            },
+            ("event_ref_list", 0, "role"),
+            EventRoleType.PRIMARY,
+        ),
+    ],
+)
+def test_fix_object_dict_normalizes_nested_type_string(object_dict, path, expected):
+    """Swagger-style nested type strings must not silently become defaults."""
+    result = fix_object_dict(object_dict)
+    value = result
+    for key in path:
+        value = value[key]
+    assert value["value"] == expected
+
+
+def test_format_span_collapses_equal_displayed_age_bounds():
+    """A narrow imprecise date must not say 'between 59 and 59 years'."""
+    birth = Date()
+    birth.set(
+        Date.QUAL_NONE,
+        Date.MOD_NONE,
+        Date.CAL_GREGORIAN,
+        (3, 2, 1811, False),
+    )
+    death = Date()
+    death.set(
+        Date.QUAL_NONE,
+        Date.MOD_RANGE,
+        Date.CAL_GREGORIAN,
+        (14, 4, 1870, False, 17, 4, 1870, False),
+    )
+
+    assert format_span(Span(birth, death), precision=1) == "59 years"
+
+
+def test_add_family_backlinks_are_idempotent():
+    """A family and its members may arrive together in either batch order."""
+    father = Person()
+    father.handle = "father"
+    father.add_family_handle("family")
+    child = Person()
+    child.handle = "child"
+    child.add_parent_family_handle("family")
+    family = Family()
+    family.handle = "family"
+    family.set_father_handle(father.handle)
+    child_ref = ChildRef()
+    child_ref.ref = "child"
+    family.add_child_ref(child_ref)
+    db = MagicMock()
+    db.get_person_from_handle.side_effect = {"father": father, "child": child}.get
+
+    add_family_update_refs(db, family, MagicMock())
+
+    assert father.family_list == ["family"]
+    assert child.parent_family_list == ["family"]
+
+
+def test_update_family_backlinks_are_idempotent():
+    """Adding a member must not repeat a backlink already present on them."""
+    mother = Person()
+    mother.handle = "mother"
+    mother.add_family_handle("family")
+    old_family = Family()
+    old_family.handle = "family"
+    family = Family()
+    family.handle = "family"
+    family.set_mother_handle(mother.handle)
+    db = MagicMock()
+    db.get_person_from_handle.side_effect = {"mother": mother}.get
+
+    update_family_update_refs(db, old_family, family, MagicMock())
+
+    assert mother.family_list == ["family"]
 
 
 def _test_complete_gramps_object_dict(obj_dict):

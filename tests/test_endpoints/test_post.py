@@ -190,6 +190,8 @@ class TestObjectCreation(unittest.TestCase):
             person_dict["extended"]["events"][0]["date"]["dateval"],
             [2, 10, 1764, False],
         )
+        self.assertEqual(person_dict["extended"]["events"][0]["type"], "Birth")
+        self.assertEqual(person_dict["event_ref_list"][0]["role"], "Primary")
 
     def test_objects_add_person_seperate(self):
         """Add a person, then a birth event, check birth ref index."""

@@ -425,6 +425,40 @@ def display_date(date: Optional[Date], locale: GrampsLocale = glocale) -> str:
         return date.text or ""
 
 
+def format_span(
+    span: Span,
+    precision: int = 3,
+    as_age: bool = True,
+    locale: GrampsLocale = glocale,
+) -> str:
+    """Format a span, collapsing a range whose displayed bounds are equal."""
+    formatted = span.format(
+        precision=precision, as_age=as_age, dlocale=locale
+    ).strip("()")
+    if not span.is_valid() or not (
+        span.date1.is_compound() or span.date2.is_compound()
+    ):
+        return formatted
+
+    def endpoints(date: Date) -> tuple[Date, Date]:
+        if not date.is_compound():
+            return date, date
+        start, stop = date.get_start_stop_range()
+        return Date(*start), Date(*stop)
+
+    start1, stop1 = endpoints(span.date1)
+    start2, stop2 = endpoints(span.date2)
+    bounds = (
+        Span(start1, stop2).format(
+            precision=precision, as_age=as_age, dlocale=locale
+        ).strip("()"),
+        Span(stop1, start2).format(
+            precision=precision, as_age=as_age, dlocale=locale
+        ).strip("()"),
+    )
+    return bounds[0] if bounds[0] == bounds[1] else formatted
+
+
 def get_event_profile_for_object(
     db_handle: DbReadBase,
     event: Event,
@@ -458,10 +492,10 @@ def get_event_profile_for_object(
         result["citations"] = count
         result["confidence"] = confidence
     if base_event is not None:
-        result[label] = (
-            Span(base_event.date, event.date)
-            .format(precision=precision, dlocale=locale)
-            .strip("()")
+        result[label] = format_span(
+            Span(base_event.date, event.date),
+            precision=precision,
+            locale=locale,
         )
     return result
 
@@ -732,10 +766,10 @@ def get_person_profile_for_object(
                 "{number_of} day", "{number_of} days", 0
             ).format(number_of=0)
             if death_event is not None:
-                death["age"] = (
-                    Span(birth_event.date, death_event.date)
-                    .format(precision=precision, dlocale=locale)
-                    .strip("()")
+                death["age"] = format_span(
+                    Span(birth_event.date, death_event.date),
+                    precision=precision,
+                    locale=locale,
                 )
     name_displayer = NameDisplay(xlocale=locale)
     name_displayer.set_name_format(db_handle.name_formats)
@@ -897,10 +931,10 @@ def get_family_profile_for_object(
                 "{number_of} day", "{number_of} days", 0
             ).format(number_of=0)
             if divorce_event is not None:
-                divorce["span"] = (
-                    Span(marriage_event.date, divorce_event.date)
-                    .format(precision=precision, dlocale=locale)
-                    .strip("()")
+                divorce["span"] = format_span(
+                    Span(marriage_event.date, divorce_event.date),
+                    precision=precision,
+                    locale=locale,
                 )
     if "all" in args or "age" in args:
         options.append("age")
@@ -1372,13 +1406,45 @@ def add_family_update_refs(
     for handle in [obj.get_father_handle(), obj.get_mother_handle()]:
         if handle:
             parent = _get_referenced_person(db_handle, handle)
-            parent.add_family_handle(obj.handle)
-            db_handle.commit_person(parent, trans)
+            if _ensure_family_backlink(parent, obj.handle, as_child=False):
+                db_handle.commit_person(parent, trans)
     # for each child, add the family handle to the child
     for ref in obj.get_child_ref_list():
         child = _get_referenced_person(db_handle, ref.ref)
-        child.add_parent_family_handle(obj.handle)
-        db_handle.commit_person(child, trans)
+        if _ensure_family_backlink(child, obj.handle, as_child=True):
+            db_handle.commit_person(child, trans)
+
+
+def _ensure_family_backlink(
+    person: Person, family_handle: Handle, *, as_child: bool
+) -> bool:
+    """Ensure a person contains exactly one backlink to a family."""
+    handles = person.parent_family_list if as_child else person.family_list
+    if handles.count(family_handle) == 1:
+        return False
+    remove = (
+        person.remove_parent_family_handle if as_child else person.remove_family_handle
+    )
+    add = person.add_parent_family_handle if as_child else person.add_family_handle
+    while family_handle in handles:
+        remove(family_handle)
+    add(family_handle)
+    return True
+
+
+def _remove_family_backlinks(
+    person: Person, family_handle: Handle, *, as_child: bool
+) -> bool:
+    """Remove every duplicate backlink to a family from a person."""
+    handles = person.parent_family_list if as_child else person.family_list
+    if family_handle not in handles:
+        return False
+    remove = (
+        person.remove_parent_family_handle if as_child else person.remove_family_handle
+    )
+    while family_handle in handles:
+        remove(family_handle)
+    return True
 
 
 # validation errors echo client input back; cap what goes into the response.
@@ -1530,6 +1596,27 @@ def _set_type_from_string(type_obj, string_value: str) -> None:
         type_obj.set(string_value)
 
 
+def _normalize_type_value(value: Any, type_class_name: str) -> Any:
+    """Return a complete serialized GrampsType for a string-only value.
+
+    The simplified API representation uses a scalar string, while Swagger-style
+    clients also send ``{"_class": "EventType", "string": "Death"}``.  The
+    latter is not a complete Gramps serialization: passing it directly to
+    ``data_to_object`` fills in the default numeric value and silently discards
+    the supplied string.  Preserve already complete dictionaries, but resolve
+    either string form through the Gramps type map.
+    """
+    if isinstance(value, dict):
+        if "value" in value:
+            return value
+        value = value.get("string")
+    if not isinstance(value, str):
+        return value
+    obj = gramps.gen.lib.__dict__[type_class_name]()
+    _set_type_from_string(obj, value)
+    return object_to_dict(obj)
+
+
 def fix_object_dict(object_dict: dict, class_name: Optional[str] = None):
     """Restore a Gramps object in simplified representation to its full form.
 
@@ -1548,40 +1635,17 @@ def fix_object_dict(object_dict: dict, class_name: Optional[str] = None):
         if k in ["type", "place_type", "media_type", "frel", "mrel"] or (
             k == "name" and class_name == "StyledTextTag"
         ):
-            if isinstance(v, str):
-                if class_name == "Family":
-                    _class = "FamilyRelType"
-                    obj = gramps.gen.lib.__dict__[_class]()
-                    _set_type_from_string(obj, v)
-                    d_out[k] = object_to_dict(obj)
-                elif class_name == "RepoRef":
-                    _class = "SourceMediaType"
-                    obj = gramps.gen.lib.__dict__[_class]()
-                    _set_type_from_string(obj, v)
-                    d_out[k] = object_to_dict(obj)
-                else:
-                    _class = f"{class_name}Type"
-                    obj = gramps.gen.lib.__dict__[_class]()
-                    _set_type_from_string(obj, v)
-                    d_out[k] = object_to_dict(obj)
+            if class_name == "Family":
+                _class = "FamilyRelType"
+            elif class_name == "RepoRef":
+                _class = "SourceMediaType"
             else:
-                d_out[k] = v
+                _class = f"{class_name}Type"
+            d_out[k] = _normalize_type_value(v, _class)
         elif k == "role":
-            if isinstance(v, str):
-                _class = "EventRoleType"
-                obj = gramps.gen.lib.__dict__[_class]()
-                _set_type_from_string(obj, v)
-                d_out[k] = object_to_dict(obj)
-            else:
-                d_out[k] = v
+            d_out[k] = _normalize_type_value(v, "EventRoleType")
         elif k == "origintype":
-            if isinstance(v, str):
-                _class = "NameOriginType"
-                obj = gramps.gen.lib.__dict__[_class]()
-                _set_type_from_string(obj, v)
-                d_out[k] = object_to_dict(obj)
-            else:
-                d_out[k] = v
+            d_out[k] = _normalize_type_value(v, "NameOriginType")
         elif k in ["rect", "mother_handle", "father_handle", "famc"] and not v:
             d_out[k] = None
         elif isinstance(v, dict):
@@ -1750,14 +1814,14 @@ def update_family_update_refs(
         except HandleError:
             # nothing to update for a reference that is already broken
             continue
-        person.remove_parent_family_handle(obj.handle)
-        db_handle.commit_person(person, trans)
+        if _remove_family_backlinks(person, obj.handle, as_child=True):
+            db_handle.commit_person(person, trans)
 
-    # add the family to children which have been added
-    for ref in new_set - orig_set:
+    # add missing references and collapse duplicates on every current child
+    for ref in new_set:
         person = _get_referenced_person(db_handle, ref)
-        person.add_parent_family_handle(obj.handle)
-        db_handle.commit_person(person, trans)
+        if _ensure_family_backlink(person, obj.handle, as_child=True):
+            db_handle.commit_person(person, trans)
 
 
 def _fix_parent_handles(
@@ -1770,12 +1834,13 @@ def _fix_parent_handles(
             except HandleError:
                 # nothing to update for a reference that is already broken
                 person = None
-            if person is not None:
-                person.family_list.remove(obj.handle)
+            if person is not None and _remove_family_backlinks(
+                person, obj.handle, as_child=False
+            ):
                 db_handle.commit_person(person, trans)
-        if new_handle:
-            person = _get_referenced_person(db_handle, new_handle)
-            person.family_list.append(obj.handle)
+    if new_handle:
+        person = _get_referenced_person(db_handle, new_handle)
+        if _ensure_family_backlink(person, obj.handle, as_child=False):
             db_handle.commit_person(person, trans)
 
 
