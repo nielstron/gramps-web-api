@@ -18,6 +18,7 @@
 #
 
 """Timeline API resources."""
+
 from typing import Dict, List, Optional, Set, Tuple, Union
 
 from flask import abort
@@ -98,6 +99,26 @@ EVENT_CATEGORIES = [
 #
 # A timeline may or may not have a anchor person. If it does relationships
 # are calculated with respect to them.
+
+
+def is_event_outside_date_window(
+    event_date: Date,
+    *,
+    start_date: Optional[Date] = None,
+    end_date: Optional[Date] = None,
+) -> bool:
+    """Return whether an event is wholly outside the requested date window.
+
+    Gramps' ordinary ``<``/``>`` date matching succeeds when *any* part of
+    two uncertain ranges compares that way.  That incorrectly rejects broad,
+    overlapping dates such as ``estimated about 1890`` and ``estimated about
+    1906``.  Timeline bounds should reject an event only when all possible
+    dates are before the start or after the end.
+    """
+    return bool(
+        (end_date and end_date.match(event_date, comparison="<<"))
+        or (start_date and start_date.match(event_date, comparison=">>"))
+    )
 
 
 class Timeline:
@@ -267,12 +288,12 @@ class Timeline:
         if self.discard_empty:
             if event[0].date.sortval == 0:
                 return
-        if self.end_date:
-            if self.end_date.match(event[0].date, comparison="<"):
-                return
-        if self.start_date:
-            if self.start_date.match(event[0].date, comparison=">"):
-                return
+        if is_event_outside_date_window(
+            event[0].date,
+            start_date=self.start_date,
+            end_date=self.end_date,
+        ):
+            return
         for item in self.timeline:
             if item[0].handle == event[0].handle:
                 return
