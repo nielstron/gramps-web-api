@@ -303,31 +303,60 @@ class SearchIndexerBase:
         """
         search = self.index if include_private else self.index_public
         where: dict[str, Any] = {}
-        if object_types:
-            where["type"] = {"$in": object_types}
         if change_op and change_value is not None:
             if change_op not in {">", "<", ">=", "<="}:
                 raise ValueError("Invalid operator for change condition")
             ops = {">": "$gt", "<": "$lt", ">=": "$gte", "<=": "$lte"}
             where["change"] = {ops[change_op]: change_value}
         offset = (page - 1) * pagesize
-        if not query or query.strip() == "*":
-            results = search.get(
-                limit=pagesize,
-                offset=offset,
-                order_by=sort,
-                where=where or None,
-            )
-        else:
-            results = search.query(
+
+        def run_search(*, search_where: dict[str, Any], search_offset: int, limit: int):
+            if not query or query.strip() == "*":
+                return search.get(
+                    limit=limit,
+                    offset=search_offset,
+                    order_by=sort,
+                    where=search_where or None,
+                )
+            return search.query(
                 query,
-                limit=pagesize,
-                offset=offset,
+                limit=limit,
+                offset=search_offset,
                 order_by=sort,
-                where=where or None,
+                where=search_where or None,
                 vector_search=self.use_semantic_text,
             )
-        total = results["total"]
+
+        prioritized_types = list(dict.fromkeys(object_types or []))
+        if len(prioritized_types) > 1:
+            total = 0
+            page_results = []
+            for object_type in prioritized_types:
+                remaining = pagesize - len(page_results)
+                type_offset = max(0, offset - total) if remaining else 0
+                type_where = {
+                    **where,
+                    "type": {"$in": [object_type]},
+                }
+                type_results = run_search(
+                    search_where=type_where,
+                    search_offset=type_offset,
+                    limit=max(1, remaining),
+                )
+                type_total = type_results["total"]
+                if remaining and type_offset < type_total:
+                    page_results.extend(type_results["results"][:remaining])
+                total += type_total
+            results = {"total": total, "results": page_results}
+        else:
+            if prioritized_types:
+                where["type"] = {"$in": prioritized_types}
+            results = run_search(
+                search_where=where,
+                search_offset=offset,
+                limit=pagesize,
+            )
+            total = results["total"]
         hits = [
             self._format_hit(hit, rank=offset + i, include_content=include_content)
             for i, hit in enumerate(results["results"])

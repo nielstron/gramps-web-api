@@ -139,7 +139,7 @@ class SearchQueryArgs(Schema):
             choices=[t.lower() for t in PRIMARY_GRAMPS_OBJECTS]
         ),
         metadata={
-            "description": "Comma-delimited list of object types to include (e.g. 'person,family,source')."
+            "description": "Comma-delimited list of object types to include (e.g. 'person,family,source'). Results are grouped in the requested type order before pagination."
         },
     )
     change = fields.Str(
