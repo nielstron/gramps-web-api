@@ -1636,6 +1636,14 @@ def fix_object_dict(object_dict: dict, class_name: Optional[str] = None):
     class_name = class_name or object_dict.get("_class")
     if not class_name:
         raise ValueError("No class name specified!")
+    if class_name == "Family" and "relationship" in object_dict:
+        # Family profiles expose the relationship type as ``relationship``,
+        # while the writable Gramps object calls the same field ``type``.
+        # Accepting a profile-shaped payload used to attach an inert
+        # ``relationship`` attribute and leave the real type as Unknown.
+        object_dict = dict(object_dict)
+        relationship = object_dict.pop("relationship")
+        object_dict.setdefault("type", relationship)
     d_out["_class"] = class_name
     for k, v in object_dict.items():
         # convert type back to dict and translate type name

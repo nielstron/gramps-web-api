@@ -166,6 +166,16 @@ def test_fix_object_dict_custom_event_type():
     assert result["type"]["value"] == 0
 
 
+def test_fix_object_dict_family_relationship_profile_alias():
+    """Accept the family-profile `relationship` name without storing junk."""
+    result = fix_object_dict(
+        {"_class": "Family", "relationship": "Married"}, "Family"
+    )
+
+    assert "relationship" not in result
+    assert result["type"]["value"] == FamilyRelType.MARRIED
+
+
 @pytest.mark.parametrize(
     "object_dict,path,expected",
     [
