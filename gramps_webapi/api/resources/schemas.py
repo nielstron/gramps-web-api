@@ -400,7 +400,7 @@ class PersonProfileSchema(_Base):
     )
     name_title = fields.Str(
         metadata={
-            "description": "Explicit name title, or title derived from the latest degree event."
+            "description": "Explicit name title, or title derived from the latest title-bearing event."
         },
     )
     other_parent_families = fields.List(
@@ -2422,7 +2422,7 @@ class TimelinePersonProfileSchema(_Base):
     )
     name_title = fields.Str(
         metadata={
-            "description": "Explicit name title, or title derived from the latest degree event."
+            "description": "Explicit name title, or title derived from the latest title-bearing event."
         },
     )
     relationship = fields.Str(

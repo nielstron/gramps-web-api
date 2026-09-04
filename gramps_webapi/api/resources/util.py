@@ -853,7 +853,7 @@ def get_person_profile_for_object(
 
 
 def get_person_academic_title(db_handle: DbReadBase, person: Person) -> str:
-    """Return the explicit name title or derive it from the latest degree event."""
+    """Return the explicit name title or derive it from a title-bearing event."""
     explicit_title = person.primary_name.get_title().strip()
     if explicit_title:
         return explicit_title
@@ -864,10 +864,17 @@ def get_person_academic_title(db_handle: DbReadBase, person: Person) -> str:
             event = db_handle.get_event_from_handle(event_ref.ref)
         except HandleError:
             continue
-        if event is None or event.get_type().xml_str() not in {"Degree", "Graduation"}:
+        if event is None:
+            continue
+        attribute_type = {
+            "Degree": "Degree",
+            "Graduation": "Degree",
+            "Coronation": "Title",
+        }.get(event.get_type().xml_str())
+        if attribute_type is None:
             continue
         for attribute in event.attribute_list:
-            if attribute.get_type().xml_str() != "Degree":
+            if attribute.get_type().xml_str() != attribute_type:
                 continue
             value = attribute.get_value().strip()
             if value:

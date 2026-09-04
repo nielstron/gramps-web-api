@@ -59,6 +59,21 @@ def _degree_event(handle, gramps_id, year, degree):
     return event
 
 
+def _coronation_event(handle, gramps_id, year, title):
+    event = Event()
+    event.handle = handle
+    event.set_gramps_id(gramps_id)
+    event.set_type("Coronation")
+    date = Date()
+    date.set(value=(0, 0, year, False))
+    event.set_date_object(date)
+    attribute = Attribute()
+    attribute.set_type("Title")
+    attribute.set_value(title)
+    event.add_attribute(attribute)
+    return event
+
+
 def test_person_academic_title_prefers_explicit_name_title():
     person = Person()
     person.primary_name.set_title("Prof.")
@@ -81,6 +96,23 @@ def test_person_academic_title_uses_latest_degree_event():
     }.get
 
     assert get_person_academic_title(db, person) == "Dr."
+
+
+def test_person_academic_title_uses_latest_coronation_title():
+    person = Person()
+    king = _coronation_event("event-king", "E0003", 936, "König")
+    emperor = _coronation_event("event-emperor", "E0004", 962, "Kaiser")
+    for event in (emperor, king):
+        event_ref = EventRef()
+        event_ref.ref = event.handle
+        person.add_event_ref(event_ref)
+    db = MagicMock()
+    db.get_event_from_handle.side_effect = {
+        king.handle: king,
+        emperor.handle: emperor,
+    }.get
+
+    assert get_person_academic_title(db, person) == "Kaiser"
 
 
 def test_person_academic_title_ignores_degree_attribute_on_other_events():
