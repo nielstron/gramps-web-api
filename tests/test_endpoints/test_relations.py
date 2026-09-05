@@ -212,6 +212,7 @@ class TestRelationPath(unittest.TestCase):
                     "family_handle": rv["family_handles"][0],
                     "from_handle": handle1,
                     "relation": "partner",
+                    "relationship_type": "Married",
                     "to_handle": handle2,
                 }
             ],

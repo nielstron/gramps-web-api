@@ -28,6 +28,75 @@ def _step_relation(
     raise ValueError("Family path step contains people outside the family")
 
 
+def _type_name(value) -> str:
+    """Return the stable, untranslated XML name of a Gramps type."""
+    return value.xml_str() if hasattr(value, "xml_str") else str(value)
+
+
+def _child_ref(family, child_handle: str):
+    return next(
+        ref for ref in family.get_child_ref_list() if ref.ref == child_handle
+    )
+
+
+def _parent_child_relationship_type(
+    family, child_handle: str, parent_handle: str
+) -> str:
+    """Return the relationship of one child to the specific traversed parent."""
+    child_ref = _child_ref(family, child_handle)
+    if parent_handle == family.get_father_handle():
+        return _type_name(child_ref.frel)
+    if parent_handle == family.get_mother_handle():
+        return _type_name(child_ref.mrel)
+    raise ValueError("Parent-child path step does not reference a family parent")
+
+
+def _sibling_relationship_type(family, from_handle: str, to_handle: str) -> str:
+    """Describe the strongest shared-parent route between two children."""
+    from_ref = _child_ref(family, from_handle)
+    to_ref = _child_ref(family, to_handle)
+    candidates = []
+    if family.get_father_handle():
+        candidates.append((_type_name(from_ref.frel), _type_name(to_ref.frel)))
+    if family.get_mother_handle():
+        candidates.append((_type_name(from_ref.mrel), _type_name(to_ref.mrel)))
+
+    rank = {
+        "Birth": 0,
+        "Adopted": 1,
+        "Stepchild": 2,
+        "Foster": 3,
+        "Sponsored": 4,
+        "Other": 5,
+        "Custom": 5,
+        "None": 6,
+        "Unknown": 6,
+    }
+
+    def candidate_type(pair: tuple[str, str]) -> str:
+        return max(pair, key=lambda item: rank.get(item, rank["Other"]))
+
+    return min(
+        (candidate_type(pair) for pair in candidates),
+        key=lambda item: rank.get(item, rank["Other"]),
+        default="Unknown",
+    )
+
+
+def _step_relationship_type(
+    family, from_handle: str, to_handle: str, relation: str
+) -> str:
+    if relation == "partner":
+        return _type_name(family.get_relationship())
+    if relation == "child":
+        return _parent_child_relationship_type(family, to_handle, from_handle)
+    if relation == "parent":
+        return _parent_child_relationship_type(family, from_handle, to_handle)
+    if relation == "sibling":
+        return _sibling_relationship_type(family, from_handle, to_handle)
+    raise ValueError(f"Unsupported path relation: {relation}")
+
+
 def find_connection_path(db_handle, handle1: str, handle2: str) -> dict:
     """Find a shortest path between people through all of their families.
 
@@ -44,7 +113,7 @@ def find_connection_path(db_handle, handle1: str, handle2: str) -> dict:
         }
 
     pending = deque([handle1])
-    previous: dict[str, tuple[str, str, str]] = {}
+    previous: dict[str, tuple[str, str, str, str]] = {}
     visited = {handle1}
     visited_families = set()
 
@@ -66,11 +135,15 @@ def find_connection_path(db_handle, handle1: str, handle2: str) -> dict:
                 relation = _step_relation(
                     current_handle, neighbour_handle, parents, children
                 )
+                relationship_type = _step_relationship_type(
+                    family, current_handle, neighbour_handle, relation
+                )
                 visited.add(neighbour_handle)
                 previous[neighbour_handle] = (
                     current_handle,
                     family_handle,
                     relation,
+                    relationship_type,
                 )
                 if neighbour_handle == handle2:
                     pending.clear()
@@ -90,13 +163,16 @@ def find_connection_path(db_handle, handle1: str, handle2: str) -> dict:
     steps = []
     current_handle = handle2
     while current_handle != handle1:
-        from_handle, family_handle, relation = previous[current_handle]
+        from_handle, family_handle, relation, relationship_type = previous[
+            current_handle
+        ]
         steps.append(
             {
                 "from_handle": from_handle,
                 "to_handle": current_handle,
                 "family_handle": family_handle,
                 "relation": relation,
+                "relationship_type": relationship_type,
             }
         )
         current_handle = from_handle

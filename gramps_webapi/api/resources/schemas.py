@@ -2039,6 +2039,12 @@ class RelationshipPathStepSchema(_Base):
             "description": "How the destination relates to the source: parent, child, partner, or sibling."
         },
     )
+    relationship_type = fields.Str(
+        required=True,
+        metadata={
+            "description": "Type of the traversed parent-child or partner relationship."
+        },
+    )
 
 
 class RelationshipPathSchema(_Base):

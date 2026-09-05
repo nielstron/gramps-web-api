@@ -15,8 +15,10 @@ from gramps_webapi.api.relation_path import find_connection_path
 
 
 class ChildRef:
-    def __init__(self, ref):
+    def __init__(self, ref, frel="Birth", mrel="Birth"):
         self.ref = ref
+        self.frel = frel
+        self.mrel = mrel
 
 
 class Person:
@@ -32,10 +34,11 @@ class Person:
 
 
 class Family:
-    def __init__(self, father, mother, children=()):
+    def __init__(self, father, mother, children=(), relationship="Married"):
         self.father = father
         self.mother = mother
         self.children = list(children)
+        self.relationship = relationship
 
     def get_father_handle(self):
         return self.father
@@ -44,7 +47,13 @@ class Family:
         return self.mother
 
     def get_child_ref_list(self):
-        return [ChildRef(handle) for handle in self.children]
+        return [
+            child if isinstance(child, ChildRef) else ChildRef(child)
+            for child in self.children
+        ]
+
+    def get_relationship(self):
+        return self.relationship
 
 
 class Database:
@@ -58,8 +67,12 @@ class Database:
             "X": Person(),
         }
         self.families = {
-            "F1": Family("A", "B", ["C", "D"]),
-            "F2": Family("D", "E"),
+            "F1": Family(
+                "A",
+                "B",
+                [ChildRef("C", "Birth", "Unknown"), ChildRef("D")],
+            ),
+            "F2": Family("D", "E", relationship="Unknown"),
         }
 
     def get_person_from_handle(self, handle):
@@ -83,14 +96,21 @@ class TestRelationPath(unittest.TestCase):
         )
 
     def test_labels_direction_of_parent_child_step(self):
-        self.assertEqual(
-            find_connection_path(self.db, "A", "C")["steps"][0]["relation"],
-            "child",
-        )
-        self.assertEqual(
-            find_connection_path(self.db, "C", "A")["steps"][0]["relation"],
-            "parent",
-        )
+        father_to_child = find_connection_path(self.db, "A", "C")["steps"][0]
+        child_to_father = find_connection_path(self.db, "C", "A")["steps"][0]
+        mother_to_child = find_connection_path(self.db, "B", "C")["steps"][0]
+
+        self.assertEqual(father_to_child["relation"], "child")
+        self.assertEqual(father_to_child["relationship_type"], "Birth")
+        self.assertEqual(child_to_father["relation"], "parent")
+        self.assertEqual(child_to_father["relationship_type"], "Birth")
+        self.assertEqual(mother_to_child["relationship_type"], "Unknown")
+
+    def test_exposes_unknown_partner_relationship(self):
+        step = find_connection_path(self.db, "D", "E")["steps"][0]
+
+        self.assertEqual(step["relation"], "partner")
+        self.assertEqual(step["relationship_type"], "Unknown")
 
     def test_returns_disconnected_result(self):
         self.assertEqual(
