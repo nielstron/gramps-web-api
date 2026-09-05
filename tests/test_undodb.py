@@ -43,6 +43,7 @@ from gramps.gen.lib import (
     Place,
     Repository,
     Source,
+    Surname,
     Tag,
 )
 from sqlalchemy import text
@@ -235,19 +236,29 @@ class TestGetTransactions(unittest.TestCase):
 
         def create_undo_manager():
             path = self.db.undolog
-            return DbUndoSQLWeb(grampsdb=self.db, dburl=f"sqlite:///{path}", tree_id=1)
+            return DbUndoSQLWeb(
+                grampsdb=self.db,
+                dburl=f"sqlite:///{path}",
+                tree_id=1,
+                user_id="editor-1",
+            )
 
         self.db._create_undo_manager = create_undo_manager
         self.db.load(self.dbdir)
 
         # separate transactions, all within the same connection
-        for description, obj_class, add_func in [
-            ("Add person", Person, self.db.add_person),
-            ("Add note", Note, self.db.add_note),
-            ("Add place", Place, self.db.add_place),
+        person = Person()
+        person.primary_name.set_first_name("Ada")
+        surname = Surname()
+        surname.set_surname("Lovelace")
+        person.primary_name.add_surname(surname)
+        for description, obj, add_func in [
+            ("Add person", person, self.db.add_person),
+            ("Add note", Note(), self.db.add_note),
+            ("Add place", Place(), self.db.add_place),
         ]:
             with DbTxn(description, self.db) as trans:
-                add_func(obj_class(), trans)
+                add_func(obj, trans)
 
     def tearDown(self):
         self.db.close(update=False)
@@ -302,6 +313,35 @@ class TestGetTransactions(unittest.TestCase):
         change = transactions[0]["changes"][0]
         assert change["old_data"] == {}
         assert change["new_data"]["_class"] == "Person"
+
+    def test_history_filters(self):
+        undodb = self.db.get_undodb()
+
+        transactions, count = undodb.get_transactions(search="ADD person")
+        assert count == 1
+        assert [transaction["id"] for transaction in transactions] == [1]
+
+        transactions, count = undodb.get_transactions(person="ada LOVELACE")
+        assert count == 1
+        assert [transaction["id"] for transaction in transactions] == [1]
+
+        transactions, count = undodb.get_transactions(obj_class="Note")
+        assert count == 1
+        assert [transaction["id"] for transaction in transactions] == [2]
+
+        transactions, count = undodb.get_transactions(trans_type=0)
+        assert count == 3
+        assert [transaction["id"] for transaction in transactions] == [1, 2, 3]
+
+        transactions, count = undodb.get_transactions(user_ids={"editor-1"})
+        assert count == 3
+        assert [transaction["id"] for transaction in transactions] == [1, 2, 3]
+
+        transactions, count = undodb.get_transactions(user_ids=set())
+        assert count == 0
+        assert transactions == []
+
+        assert undodb.get_transactions_state(person="missing") == (None, 0)
 
 
 class TestMigrate(unittest.TestCase):

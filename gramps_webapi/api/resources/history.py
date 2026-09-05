@@ -113,6 +113,55 @@ class TransactionsHistoryQueryArgs(Schema):
             "description": "Transaction ID; if provided, return only transactions with an id strictly greater than this value. Unlike the timestamp-based `before`/`after` cursor, this is exact and has no floating-point precision loss. 0 means 'from the beginning'."
         },
     )
+    search = fields.Str(
+        load_default=None,
+        metadata={
+            "description": (
+                "Text to find in the transaction description or affected object data. "
+                "Every whitespace-separated term must match."
+            )
+        },
+    )
+    editor = fields.Str(
+        load_default=None,
+        metadata={
+            "description": (
+                "Case-insensitive substring of the editor's username or full name."
+            )
+        },
+    )
+    person = fields.Str(
+        load_default=None,
+        metadata={
+            "description": (
+                "Text to find in affected person data. Every whitespace-separated term "
+                "must match."
+            )
+        },
+    )
+    object_class = fields.Str(
+        load_default=None,
+        validate=validate.OneOf(
+            [
+                "Person",
+                "Family",
+                "Event",
+                "Place",
+                "Source",
+                "Citation",
+                "Repository",
+                "Note",
+                "Tag",
+                "Media",
+            ]
+        ),
+        metadata={"description": "Class of an affected object."},
+    )
+    trans_type = fields.Integer(
+        load_default=None,
+        validate=validate.OneOf([TXNADD, TXNUPD, TXNDEL]),
+        metadata={"description": "Affected-object action: 0 add, 1 update, 2 delete."},
+    )
 
 
 class TransactionsHistoryResource(ProtectedResource):
@@ -125,12 +174,18 @@ class TransactionsHistoryResource(ProtectedResource):
         require_permissions([PERM_VIEW_PRIVATE])
         db_handle = get_db_handle()
         undodb = db_handle.undodb
+        user_ids = matching_user_ids(args["editor"])
 
         max_id, count = undodb.get_transactions_state(
             before=args["before"],
             after=args["after"],
             before_id=args["before_id"],
             after_id=args["after_id"],
+            search=args["search"],
+            user_ids=user_ids,
+            person=args["person"],
+            obj_class=args["object_class"],
+            trans_type=args["trans_type"],
         )
         etag = transactions_etag(args, max_id, count)
         if etag_unchanged(etag):
@@ -147,6 +202,11 @@ class TransactionsHistoryResource(ProtectedResource):
             after=args["after"],
             before_id=args["before_id"],
             after_id=args["after_id"],
+            search=args["search"],
+            user_ids=user_ids,
+            person=args["person"],
+            obj_class=args["object_class"],
+            trans_type=args["trans_type"],
             known_count=count,
         )
 
@@ -377,6 +437,24 @@ class TransactionUndoResource(ProtectedResource):
 def transaction_user_ids(transactions: list[Dict]) -> set[str]:
     """Get the IDs of the users that committed the given transactions."""
     return {transaction["connection"]["user_id"] for transaction in transactions}
+
+
+def matching_user_ids(editor: str | None) -> set[str] | None:
+    """Resolve an editor-name substring to the corresponding user IDs."""
+    if not editor:
+        return None
+    editor = editor.strip()
+    if not editor:
+        return None
+    needle = editor.casefold()
+    return {
+        user_id
+        for user_id, user in get_user_dict().items()
+        if any(
+            needle in (user.get(field) or "").casefold()
+            for field in ("name", "full_name")
+        )
+    }
 
 
 def transactions_etag(args: Dict, max_id: int | None, count: int) -> str:

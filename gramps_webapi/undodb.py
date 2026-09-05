@@ -624,6 +624,11 @@ class DbUndoSQLWeb(DbUndoSQL):
         after: float | None = None,
         before_id: int | None = None,
         after_id: int | None = None,
+        search: str | None = None,
+        user_ids: set[str] | None = None,
+        person: str | None = None,
+        obj_class: str | None = None,
+        trans_type: int | None = None,
     ):
         """Build the base query for this tree's transactions."""
         query = (
@@ -639,7 +644,68 @@ class DbUndoSQLWeb(DbUndoSQL):
             query = query.filter(Transaction.id < before_id)
         if after_id is not None:
             query = query.filter(Transaction.id > after_id)
+        if user_ids is not None:
+            query = query.filter(Connection.user_id.in_(user_ids))
+        if person:
+            query = query.filter(
+                self._matching_change(
+                    Change.obj_class == "Person",
+                    *self._text_conditions(person, include_metadata=False),
+                )
+            )
+        if obj_class:
+            query = query.filter(self._matching_change(Change.obj_class == obj_class))
+        if trans_type is not None:
+            query = query.filter(self._matching_change(Change.trans_type == trans_type))
+        if search:
+            for token in search.split():
+                transaction_match = self._text_contains(Transaction.description, token)
+                change_match = self._matching_change(
+                    or_(
+                        self._text_contains(Change.obj_class, token),
+                        self._text_contains(Change.obj_handle, token),
+                        self._text_contains(Change.old_json, token),
+                        self._text_contains(Change.new_json, token),
+                    )
+                )
+                query = query.filter(or_(transaction_match, change_match))
         return query
+
+    @staticmethod
+    def _text_contains(column, value: str):
+        """Return a case-insensitive, literal substring condition."""
+        return func.lower(func.coalesce(column, "")).contains(
+            value.casefold(), autoescape=True
+        )
+
+    def _text_conditions(self, value: str, include_metadata: bool = True) -> list[Any]:
+        """Require every whitespace-separated token to occur in a change."""
+        columns = [Change.old_json, Change.new_json]
+        if include_metadata:
+            columns.extend([Change.obj_class, Change.obj_handle])
+        return [
+            or_(*(self._text_contains(column, token) for column in columns))
+            for token in value.split()
+        ]
+
+    @staticmethod
+    def _matching_change(*conditions):
+        """Match a change belonging to the transaction's own change range."""
+        return (
+            Change.__table__.select()
+            .where(Change.connection_id == Transaction.connection_id)
+            .where(
+                or_(
+                    Transaction.first.is_(None),
+                    and_(
+                        Change.id >= Transaction.first,
+                        Change.id <= Transaction.last,
+                    ),
+                )
+            )
+            .where(*conditions)
+            .exists()
+        )
 
     def get_transactions_state(
         self,
@@ -647,6 +713,11 @@ class DbUndoSQLWeb(DbUndoSQL):
         after: float | None = None,
         before_id: int | None = None,
         after_id: int | None = None,
+        search: str | None = None,
+        user_ids: set[str] | None = None,
+        person: str | None = None,
+        obj_class: str | None = None,
+        trans_type: int | None = None,
     ) -> tuple[int | None, int]:
         """Get the highest transaction ID and the number of transactions.
 
@@ -660,6 +731,11 @@ class DbUndoSQLWeb(DbUndoSQL):
                 after=after,
                 before_id=before_id,
                 after_id=after_id,
+                search=search,
+                user_ids=user_ids,
+                person=person,
+                obj_class=obj_class,
+                trans_type=trans_type,
             )
             return query.with_entities(
                 func.max(Transaction.id), func.count(Transaction.id)
@@ -676,6 +752,11 @@ class DbUndoSQLWeb(DbUndoSQL):
         after: float | None = None,
         before_id: int | None = None,
         after_id: int | None = None,
+        search: str | None = None,
+        user_ids: set[str] | None = None,
+        person: str | None = None,
+        obj_class: str | None = None,
+        trans_type: int | None = None,
         known_count: int | None = None,
     ) -> tuple[list[dict[str, Any]], int]:
         """Get transactions as a JSONifiable list.
@@ -690,6 +771,11 @@ class DbUndoSQLWeb(DbUndoSQL):
                 after=after,
                 before_id=before_id,
                 after_id=after_id,
+                search=search,
+                user_ids=user_ids,
+                person=person,
+                obj_class=obj_class,
+                trans_type=trans_type,
             )
             count = query.count() if known_count is None else known_count
             if ascending:
