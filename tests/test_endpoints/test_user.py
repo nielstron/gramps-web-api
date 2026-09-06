@@ -155,6 +155,46 @@ class TestUser(unittest.TestCase):
         assert self.client.get(
             BASE_URL + "/users/-/settings", headers=user_header
         ).json == {"homePerson": "I0042"}
+
+        rv = self.client.put(
+            BASE_URL + "/users/-/settings",
+            headers=user_header,
+            json={
+                "appearance": {
+                    "lang": "de",
+                    "theme": "dark",
+                    "treeDefaultView": "relationship",
+                }
+            },
+        )
+        assert rv.status_code == 200
+        assert rv.json == {
+            "homePerson": "I0042",
+            "appearance": {
+                "lang": "de",
+                "theme": "dark",
+                "treeDefaultView": "relationship",
+            },
+        }
+        assert (
+            self.client.get(BASE_URL + "/users/-/settings", headers=user_header).json
+            == rv.json
+        )
+
+        rv = self.client.put(
+            BASE_URL + "/users/-/settings",
+            headers=user_header,
+            json={"appearance": {"theme": "light"}},
+        )
+        assert rv.status_code == 200
+        assert rv.json == {
+            "homePerson": "I0042",
+            "appearance": {
+                "lang": "de",
+                "theme": "light",
+                "treeDefaultView": "relationship",
+            },
+        }
         assert (
             self.client.get(BASE_URL + "/users/-/settings", headers=other_header).json
             == {}

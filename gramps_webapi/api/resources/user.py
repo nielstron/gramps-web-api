@@ -134,10 +134,14 @@ class UserSettingsArgsSchema(Schema):
     """Private settings that belong to the authenticated user."""
 
     homePerson = fields.Str(allow_none=True)
+    appearance = fields.Dict(
+        keys=fields.Str(),
+        values=fields.Raw(allow_none=True),
+    )
 
 
 class UserSettingsResource(ProtectedResource):
-    """Read and replace settings for the authenticated user."""
+    """Read and update settings for the authenticated user."""
 
     def get(self):
         """Get the current user's private settings."""
@@ -145,10 +149,17 @@ class UserSettingsResource(ProtectedResource):
 
     @api_blueprint.arguments(UserSettingsArgsSchema, location="json")
     def put(self, args):
-        """Replace the current user's private settings."""
+        """Update the current user's private settings."""
         user_id = get_jwt_identity()
-        set_user_settings(user_id, args)
-        return jsonify(args)
+        current = get_user_settings(user_id)
+        updated = {**current, **args}
+        if "appearance" in args:
+            updated["appearance"] = {
+                **current.get("appearance", {}),
+                **args["appearance"],
+            }
+        set_user_settings(user_id, updated)
+        return jsonify(updated)
 
 
 class UsersResource(ProtectedResource):
