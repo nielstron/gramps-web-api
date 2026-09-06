@@ -19,6 +19,7 @@
 
 """Base for Gramps object API resources."""
 
+import logging
 from typing import TypeVar
 
 import gramps_ql as gql
@@ -73,6 +74,30 @@ from .util import (
 )
 
 T = TypeVar("T", bound=GrampsObject)
+_LOG = logging.getLogger(__name__)
+
+
+def update_search_indices_after_commit(
+    trans_dict: list[dict], tree: str, user_id: str
+) -> None:
+    """Dispatch indexing without misreporting an already committed mutation."""
+    task_kwargs = {"trans_dict": trans_dict, "tree": tree, "user_id": user_id}
+    try:
+        run_task(update_search_indices_from_transaction, **task_kwargs)
+    except Exception:
+        _LOG.warning(
+            "Search-index task dispatch failed after the tree transaction committed; "
+            "falling back to synchronous indexing",
+            exc_info=True,
+        )
+        try:
+            update_search_indices_from_transaction(**task_kwargs)
+        except Exception:
+            _LOG.error(
+                "Synchronous search-index fallback also failed after the tree "
+                "transaction committed; the search index must be rebuilt",
+                exc_info=True,
+            )
 
 
 class GrampsObjectResourceHelper(GrampsJSONEncoder):
@@ -325,8 +350,7 @@ class GrampsObjectResource(GrampsObjectResourceHelper, Resource):
         tree = get_tree_from_jwt_or_fail()
         trans_dict_to_reindex = remove_deleted_from_search_indices(tree, trans_dict)
         if trans_dict_to_reindex:
-            run_task(
-                update_search_indices_from_transaction,
+            update_search_indices_after_commit(
                 trans_dict=trans_dict_to_reindex,
                 tree=tree,
                 user_id=get_jwt_identity(),
@@ -357,8 +381,7 @@ class GrampsObjectResource(GrampsObjectResourceHelper, Resource):
         # update search index
         tree = get_tree_from_jwt_or_fail()
         user_id = get_jwt_identity()
-        run_task(
-            update_search_indices_from_transaction,
+        update_search_indices_after_commit(
             trans_dict=trans_dict,
             tree=tree,
             user_id=user_id,
@@ -678,8 +701,7 @@ class GrampsObjectsResource(GrampsObjectResourceHelper, Resource):
         # update search index
         tree = get_tree_from_jwt_or_fail()
         user_id = get_jwt_identity()
-        run_task(
-            update_search_indices_from_transaction,
+        update_search_indices_after_commit(
             trans_dict=trans_dict,
             tree=tree,
             user_id=user_id,

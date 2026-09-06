@@ -105,6 +105,32 @@ class TestObjectCreation(unittest.TestCase):
         self.assertEqual(obj_dict["handle"], handle)
         self.assertEqual(obj_dict["text"]["string"], "My first note.")
 
+    def test_post_succeeds_when_index_dispatch_fails_after_commit(self):
+        """A committed object must not look like a failed mutation to clients."""
+        handle = make_handle()
+        obj = {
+            "_class": "Note",
+            "handle": handle,
+            "gramps_id": f"N{uuid.uuid4().hex}",
+            "text": {"_class": "StyledText", "string": "committed"},
+        }
+        headers = get_headers(self.client, "admin", "123")
+        with (
+            patch(
+                "gramps_webapi.api.resources.base.run_task",
+                side_effect=RuntimeError("task broker unavailable"),
+            ),
+            patch(
+                "gramps_webapi.api.resources.base.update_search_indices_from_transaction"
+            ) as fallback,
+        ):
+            rv = self.client.post("/api/notes/", json=obj, headers=headers)
+        self.assertEqual(rv.status_code, 201)
+        fallback.assert_called_once()
+        rv = self.client.get(f"/api/notes/{handle}", headers=headers)
+        self.assertEqual(rv.status_code, 200)
+        self.assertEqual(rv.json["text"]["string"], "committed")
+
     def test_add_note(self):
         """Add a single note."""
         handle = make_handle()
