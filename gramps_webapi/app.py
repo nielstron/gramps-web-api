@@ -52,7 +52,7 @@ from .api.ratelimiter import limiter
 from .api.search.embeddings import create_remote_embedding_function, load_model
 from .api.tasks import run_task, send_telemetry_task
 from .api.telemetry import get_server_uuid, should_send_telemetry
-from .api.util import close_db, get_tree_from_jwt
+from .api.util import close_db, get_tree_from_jwt, release_tree_write_lock
 from .auth import user_db
 from .auth.oidc import init_oidc
 from .config import DefaultConfig, DefaultConfigJWT
@@ -371,8 +371,11 @@ def create_app(config: Optional[Dict[str, Any]] = None, config_from_env: bool = 
         if db:
             close_db(db)
         db_write = g.pop("db_write", None)
-        if db_write:
-            close_db(db_write)
+        try:
+            if db_write:
+                close_db(db_write)
+        finally:
+            release_tree_write_lock()
 
     @app.teardown_request
     def close_user_db_connection(exception) -> None:

@@ -28,6 +28,7 @@ import logging
 import os
 import smtplib
 import socket
+import threading
 from email.message import EmailMessage
 from email.utils import formataddr, formatdate, make_msgid, parseaddr
 from http import HTTPStatus
@@ -96,6 +97,24 @@ from ..const import (
 )
 from ..dbmanager import WebDbManager
 from .auth import has_permissions
+
+_tree_write_locks: dict[str, threading.RLock] = {}
+_tree_write_locks_guard = threading.Lock()
+
+
+def _acquire_tree_write_lock(tree: str) -> None:
+    """Serialize writable Gramps connections for one tree in this process."""
+    with _tree_write_locks_guard:
+        lock = _tree_write_locks.setdefault(tree, threading.RLock())
+    lock.acquire()
+    g.db_write_lock = lock
+
+
+def release_tree_write_lock() -> None:
+    """Release a tree writer lock acquired for the current app context."""
+    lock = g.pop("db_write_lock", None)
+    if lock is not None:
+        lock.release()
 
 
 class Parser(FlaskParser):
@@ -511,16 +530,30 @@ def get_db_handle(readonly: bool = True) -> DbReadBase:
         return ModifiedPrivateProxyDb(g.db)
 
     if not readonly and "db_write" not in g:
+        # A mutation often reads an object before asking for a writable
+        # connection. Keeping that independent SQLite reader open while a
+        # concurrent request does the same can deadlock both transactions:
+        # each writer needs the other request's reader to close. Release this
+        # request's reader before waiting for exclusive write access.
+        db = g.pop("db", None)
+        if db is not None:
+            close_db(db)
+
+        _acquire_tree_write_lock(tree)
         # cache the DbState instance for the duration of
         # the request
         # cache the db instance for the duration of
         # the request
-        db_write = get_db_outside_request(
-            tree=tree,
-            view_private=view_private,
-            readonly=False,
-            user_id=user_id,
-        )
+        try:
+            db_write = get_db_outside_request(
+                tree=tree,
+                view_private=view_private,
+                readonly=False,
+                user_id=user_id,
+            )
+        except Exception:
+            release_tree_write_lock()
+            raise
         g.db_write = db_write
     if not readonly:
         return g.db_write
