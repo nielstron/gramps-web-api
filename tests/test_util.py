@@ -168,12 +168,43 @@ def test_fix_object_dict_custom_event_type():
 
 def test_fix_object_dict_family_relationship_profile_alias():
     """Accept the family-profile `relationship` name without storing junk."""
-    result = fix_object_dict(
-        {"_class": "Family", "relationship": "Married"}, "Family"
-    )
+    result = fix_object_dict({"_class": "Family", "relationship": "Married"}, "Family")
 
     assert "relationship" not in result
     assert result["type"]["value"] == FamilyRelType.MARRIED
+
+
+def test_fix_object_dict_deduplicates_reference_lists_in_order():
+    """Repeated API references must not become repeated Gramps relations."""
+    event_ref = {
+        "_class": "EventRef",
+        "ref": "event-1",
+        "role": "Primary",
+    }
+    name = {
+        "_class": "Name",
+        "first_name": "Johann",
+        "surname_list": [{"_class": "Surname", "surname": "Mündler"}],
+    }
+    result = fix_object_dict(
+        {
+            "_class": "Person",
+            "family_list": ["family-2", "family-1", "family-2"],
+            "parent_family_list": ["parents", "parents"],
+            "event_ref_list": [event_ref, event_ref, {**event_ref, "ref": "event-2"}],
+            "alternate_names": [name, name],
+            "birth_ref_index": 2,
+        }
+    )
+
+    assert result["family_list"] == ["family-2", "family-1"]
+    assert result["parent_family_list"] == ["parents"]
+    assert [ref["ref"] for ref in result["event_ref_list"]] == [
+        "event-1",
+        "event-2",
+    ]
+    assert len(result["alternate_names"]) == 1
+    assert result["birth_ref_index"] == 1
 
 
 @pytest.mark.parametrize(

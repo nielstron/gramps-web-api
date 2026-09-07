@@ -33,6 +33,7 @@ from typing import Any, Literal, Optional, Union, cast
 
 import gramps
 import gramps.gen.lib
+import gramps_gedcom7
 import jsonschema
 from celery import Task
 from flask import Response, current_app, request
@@ -43,6 +44,7 @@ from gramps.gen.db.base import DbReadBase, DbWriteBase
 from gramps.gen.db.dbconst import TXNADD, TXNDEL, TXNUPD
 from gramps.gen.db.utils import make_database
 from gramps.gen.display.name import NameDisplay
+from gramps.gen.display.name import displayer as default_name_displayer
 from gramps.gen.display.place import PlaceDisplay
 from gramps.gen.errors import HandleError
 from gramps.gen.lib import (
@@ -76,9 +78,6 @@ from gramps.gen.utils.db import (
 from gramps.gen.utils.grampslocale import GrampsLocale
 from gramps.gen.utils.id import create_id
 from gramps.gen.utils.place import conv_lat_lon
-from gramps.gen.display.name import displayer as default_name_displayer
-
-import gramps_gedcom7
 
 from ...const import DISABLED_IMPORTERS, SEX_FEMALE, SEX_MALE, SEX_OTHER, SEX_UNKNOWN
 from ...types import FilenameOrPath, Handle, TransactionJson
@@ -432,9 +431,9 @@ def format_span(
     locale: GrampsLocale = glocale,
 ) -> str:
     """Format a span, collapsing a range whose displayed bounds are equal."""
-    formatted = span.format(
-        precision=precision, as_age=as_age, dlocale=locale
-    ).strip("()")
+    formatted = span.format(precision=precision, as_age=as_age, dlocale=locale).strip(
+        "()"
+    )
     if not span.is_valid() or not (
         span.date1.is_compound() or span.date2.is_compound()
     ):
@@ -449,12 +448,12 @@ def format_span(
     start1, stop1 = endpoints(span.date1)
     start2, stop2 = endpoints(span.date2)
     bounds = (
-        Span(start1, stop2).format(
-            precision=precision, as_age=as_age, dlocale=locale
-        ).strip("()"),
-        Span(stop1, start2).format(
-            precision=precision, as_age=as_age, dlocale=locale
-        ).strip("()"),
+        Span(start1, stop2)
+        .format(precision=precision, as_age=as_age, dlocale=locale)
+        .strip("()"),
+        Span(stop1, start2)
+        .format(precision=precision, as_age=as_age, dlocale=locale)
+        .strip("()"),
     )
     return bounds[0] if bounds[0] == bounds[1] else formatted
 
@@ -1624,6 +1623,68 @@ def _normalize_type_value(value: Any, type_class_name: str) -> Any:
     return object_to_dict(obj)
 
 
+# These fields represent sets of references even though Gramps keeps their
+# insertion order in lists. Replaying a POST/PUT payload must therefore not
+# append an identical relation a second time. Do not apply this to every list:
+# repeated values can be meaningful in e.g. StyledText ranges or date values.
+ORDERED_REFERENCE_LISTS = frozenset(
+    {
+        "alternate_names",
+        "child_ref_list",
+        "citation_list",
+        "event_ref_list",
+        "family_list",
+        "media_list",
+        "note_list",
+        "parent_family_list",
+        "person_ref_list",
+        "placeref_list",
+        "reporef_list",
+        "tag_list",
+    }
+)
+
+
+def _deduplicate_ordered(values: list[Any]) -> tuple[list[Any], list[int]]:
+    """Return unique values and map every old index to its retained index."""
+    unique: list[Any] = []
+    old_to_new: list[int] = []
+    for value in values:
+        try:
+            new_index = unique.index(value)
+        except ValueError:
+            new_index = len(unique)
+            unique.append(value)
+        old_to_new.append(new_index)
+    return unique, old_to_new
+
+
+def _normalize_reference_lists(object_dict: dict[str, Any]) -> dict[str, Any]:
+    """Collapse exact duplicate references while retaining their first order."""
+    event_index_map: list[int] | None = None
+    for key in ORDERED_REFERENCE_LISTS:
+        values = object_dict.get(key)
+        if not isinstance(values, list):
+            continue
+        unique, old_to_new = _deduplicate_ordered(values)
+        object_dict[key] = unique
+        if key == "event_ref_list":
+            event_index_map = old_to_new
+
+    # Person stores canonical birth/death pointers as indices into
+    # event_ref_list. Keep them pointing at the same event after compaction.
+    if event_index_map is not None:
+        for key in ("birth_ref_index", "death_ref_index"):
+            old_index = object_dict.get(key)
+            if (
+                isinstance(old_index, int)
+                and not isinstance(old_index, bool)
+                and 0 <= old_index < len(event_index_map)
+            ):
+                object_dict[key] = event_index_map[old_index]
+    return object_dict
+
+
 def fix_object_dict(object_dict: dict, class_name: Optional[str] = None):
     """Restore a Gramps object in simplified representation to its full form.
 
@@ -1681,7 +1742,7 @@ def fix_object_dict(object_dict: dict, class_name: Optional[str] = None):
             d_out[k] = {"_class": "Date", "dateval": [0, 0, 0, False]}
         else:
             d_out[k] = v
-    return d_out
+    return _normalize_reference_lists(d_out)
 
 
 def _get_class_name(super_name, key_name) -> str:

@@ -279,6 +279,71 @@ class TestObjectUpdate(unittest.TestCase):
         self.assertEqual(person_dict["birth_ref_index"], -1)
         self.assertEqual(person_dict["death_ref_index"], 0)
 
+    def test_update_person_deduplicates_replayed_references(self):
+        """A family POST followed by a replayed person PUT stays idempotent."""
+        headers = get_headers(self.client, "admin", "123")
+        person_handle = make_handle()
+        family_handle = make_handle()
+        event_handle = make_handle()
+        name = {
+            "_class": "Name",
+            "first_name": "Johann",
+            "surname_list": [{"_class": "Surname", "surname": "Mündler"}],
+        }
+        person = {
+            "_class": "Person",
+            "handle": person_handle,
+            "primary_name": name,
+            "gender": 1,
+        }
+        self.assertEqual(
+            self.client.post("/api/people/", json=person, headers=headers).status_code,
+            201,
+        )
+        self.assertEqual(
+            self.client.post(
+                "/api/events/",
+                json={"_class": "Event", "handle": event_handle, "type": "Birth"},
+                headers=headers,
+            ).status_code,
+            201,
+        )
+        self.assertEqual(
+            self.client.post(
+                "/api/families/",
+                json={
+                    "_class": "Family",
+                    "handle": family_handle,
+                    "father_handle": person_handle,
+                },
+                headers=headers,
+            ).status_code,
+            201,
+        )
+
+        stored = self.client.get(f"/api/people/{person_handle}", headers=headers).json
+        stored["family_list"].extend([family_handle, family_handle])
+        event_ref = {
+            "_class": "EventRef",
+            "ref": event_handle,
+            "role": "Primary",
+        }
+        stored["event_ref_list"] = [event_ref, event_ref]
+        stored["birth_ref_index"] = 1
+        stored["alternate_names"] = [name, name]
+
+        rv = self.client.put(
+            f"/api/people/{person_handle}", json=stored, headers=headers
+        )
+        self.assertEqual(rv.status_code, 200)
+        result = self.client.get(f"/api/people/{person_handle}", headers=headers).json
+        self.assertEqual(result["family_list"], [family_handle])
+        self.assertEqual(
+            [ref["ref"] for ref in result["event_ref_list"]], [event_handle]
+        )
+        self.assertEqual(result["birth_ref_index"], 0)
+        self.assertEqual(len(result["alternate_names"]), 1)
+
     def test_search_update_note(self):
         """Test whether updating a note updates the search index correctly."""
         handle = make_handle()
