@@ -48,8 +48,19 @@ def test_duplicate_and_nearly_equal_matches_are_ambiguous():
         make_person("I2", "Niels", "Mündler"),
     ]
     assert find_home_person("Niels Mündler", people) is None
-    people[1] = make_person("I2", "Niels Adrian", "Mündler")
-    assert find_home_person("Niels Mündler", people) is None
+    people[1] = make_person("I2", "Nils Adrian", "Mündler")
+    assert find_home_person("Nils Mündler", people) is None
+
+
+def test_complete_exact_name_takes_precedence_over_relatives_with_shared_names():
+    people = [
+        make_person("I1", "Niels Torsten Jens Friedrich", "Mündler-Sasahara"),
+        make_person("I2", "Torsten", "Mündler"),
+    ]
+    assert (
+        find_home_person("Niels Torsten Jens Friedrich Mündler-Sasahara", people)
+        == "I1"
+    )
 
 
 def test_alternate_names_and_private_names():

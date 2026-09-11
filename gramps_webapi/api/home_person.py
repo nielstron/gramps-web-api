@@ -51,6 +51,10 @@ def find_home_person(full_name, people, view_private=False):
     candidates.sort(reverse=True)
     if not candidates or candidates[0][0] < 0.9:
         return None
+    if len(candidates) > 1 and candidates[0][0] == candidates[1][0]:
+        return None
+    if candidates[0][0] == 1:
+        return candidates[0][1]
     if len(candidates) > 1 and candidates[0][0] < candidates[1][0] + 0.06:
         return None
     return candidates[0][1]
