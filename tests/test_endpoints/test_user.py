@@ -43,6 +43,8 @@ from gramps_webapi.auth import (
     get_number_users,
     get_user_details,
     get_user_oidc_accounts,
+    modify_user,
+    set_user_settings,
     user_db,
 )
 from gramps_webapi.auth.const import (
@@ -208,6 +210,84 @@ class TestUser(unittest.TestCase):
             BASE_URL + "/token/", json={"username": name, "password": "123"}
         )
         return {"Authorization": f"Bearer {response.json['access_token']}"}
+
+    def test_match_home_person_sets_only_own_account_settings(self):
+        from tests.test_home_person import make_person
+
+        modify_user("user", fullname="Nils Muendler")
+        endpoint = BASE_URL + "/users/-/settings/home-person/match"
+        header = self._login_header("user")
+        assert self.client.post(endpoint).status_code == 401
+        with patch("gramps_webapi.api.resources.user.get_db_handle") as db:
+            db.return_value.iter_people.return_value = [
+                make_person("I1", "Niels", "Mündler")
+            ]
+            response = self.client.post(endpoint, headers=header)
+        assert response.status_code == 200
+        assert response.json == {"homePerson": "I1"}
+        assert (
+            self.client.get(BASE_URL + "/users/-/settings", headers=header).json
+            == response.json
+        )
+        assert (
+            self.client.get(
+                BASE_URL + "/users/-/settings", headers=self._login_header()
+            ).json
+            == {}
+        )
+
+    def test_match_home_person_preserves_explicit_choices_and_other_settings(self):
+        modify_user("user", fullname="Niels Mündler")
+        user_id = get_guid("user")
+        header = self._login_header("user")
+        endpoint = BASE_URL + "/users/-/settings/home-person/match"
+        for choice in ("I42", "", None):
+            settings = {"homePerson": choice, "appearance": {"theme": "dark"}}
+            set_user_settings(user_id, settings)
+            with patch("gramps_webapi.api.resources.user.get_db_handle") as db:
+                assert self.client.post(endpoint, headers=header).json == settings
+                db.assert_not_called()
+        set_user_settings(user_id, {"appearance": {"theme": "dark"}})
+        with (
+            patch("gramps_webapi.api.resources.user.get_db_handle"),
+            patch(
+                "gramps_webapi.api.resources.user.find_home_person", return_value="I1"
+            ),
+        ):
+            assert self.client.post(endpoint, headers=header).json == {
+                "homePerson": "I1",
+                "appearance": {"theme": "dark"},
+            }
+
+    def test_match_home_person_does_not_overwrite_concurrent_settings(self):
+        modify_user("user", fullname="Niels Mündler")
+        user_id = get_guid("user")
+
+        def concurrent_choice(*args, **kwargs):
+            set_user_settings(user_id, {"homePerson": "I42"})
+            return "I1"
+
+        with (
+            patch("gramps_webapi.api.resources.user.get_db_handle"),
+            patch(
+                "gramps_webapi.api.resources.user.find_home_person",
+                side_effect=concurrent_choice,
+            ),
+        ):
+            response = self.client.post(
+                BASE_URL + "/users/-/settings/home-person/match",
+                headers=self._login_header("user"),
+            )
+        assert response.json == {"homePerson": "I42"}
+
+    def test_match_home_person_without_name_does_not_scan_tree(self):
+        with patch("gramps_webapi.api.resources.user.get_db_handle") as db:
+            response = self.client.post(
+                BASE_URL + "/users/-/settings/home-person/match",
+                headers=self._login_header("user"),
+            )
+        assert response.json == {}
+        db.assert_not_called()
 
     def _invite(self, email="invite@example.com", role=ROLE_MEMBER):
         with patch("gramps_webapi.api.resources.invitations.run_task") as task:

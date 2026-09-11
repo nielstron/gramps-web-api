@@ -24,6 +24,7 @@ import datetime
 from gettext import gettext as _
 from typing import Optional, Tuple
 
+import sqlalchemy as sa
 from flask import abort, current_app, jsonify, render_template, request
 from flask_jwt_extended import create_access_token, get_jwt, get_jwt_identity
 from marshmallow import Schema
@@ -47,7 +48,6 @@ from ...auth import (
     set_user_settings,
     user_db,
 )
-from ...auth.oidc_helpers import is_oidc_enabled
 from ...auth.const import (
     CLAIM_LIMITED_SCOPE,
     PERM_ADD_OTHER_TREE_USER,
@@ -63,6 +63,7 @@ from ...auth.const import (
     PERM_MAKE_ADMIN,
     PERM_VIEW_OTHER_TREE_USER,
     PERM_VIEW_OTHER_USER,
+    PERM_VIEW_PRIVATE,
     ROLE_ADMIN,
     ROLE_DISABLED,
     ROLE_OWNER,
@@ -72,9 +73,11 @@ from ...auth.const import (
     SCOPE_CREATE_OWNER,
     SCOPE_RESET_PW,
 )
+from ...auth.oidc_helpers import is_oidc_enabled
 from ...const import TREE_MULTI
 from ..auth import has_permissions, require_permissions
 from ..blueprint import api_blueprint
+from ..home_person import find_home_person
 from ..ratelimiter import limiter
 from ..tasks import (
     run_task,
@@ -84,6 +87,7 @@ from ..tasks import (
 )
 from ..util import (
     abort_with_message,
+    get_db_handle,
     get_tree_from_jwt,
     get_tree_id,
     get_tree_id_or_none,
@@ -160,6 +164,42 @@ class UserSettingsResource(ProtectedResource):
             }
         set_user_settings(user_id, updated)
         return jsonify(updated)
+
+
+class UserMatchHomePersonResource(ProtectedResource):
+    """Best-effort home-person setup after login, using the account's own name."""
+
+    def post(self):
+        require_permissions([PERM_EDIT_OWN_USER])
+        user_id = get_jwt_identity()
+        user, snapshot = (
+            user_db.session.query(User, sa.cast(User.settings, sa.String))
+            .filter(User.id == user_id)
+            .one()
+        )
+        settings = user.settings or {}
+        if "homePerson" in settings or not user.fullname or not get_tree_from_jwt():
+            return jsonify(settings)
+        full_name = user.fullname
+        person_id = find_home_person(
+            full_name,
+            get_db_handle().iter_people(),
+            view_private=has_permissions([PERM_VIEW_PRIVATE]),
+        )
+        if person_id:
+            # Leave concurrent manual choices and other settings edits intact.
+            user_db.session.execute(
+                sa.update(User)
+                .where(
+                    User.id == user_id,
+                    User.fullname == full_name,
+                    sa.cast(User.settings, sa.String).is_not_distinct_from(snapshot),
+                )
+                .values(settings={**settings, "homePerson": person_id}),
+                execution_options={"synchronize_session": False},
+            )
+            user_db.session.commit()
+        return jsonify(get_user_settings(user_id))
 
 
 class UsersResource(ProtectedResource):
