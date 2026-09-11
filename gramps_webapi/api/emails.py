@@ -20,6 +20,7 @@
 """Texts for e-mails."""
 
 from gettext import gettext as _
+from html import escape
 
 EMAIL_CSS_STYLES = """
 body {
@@ -59,6 +60,27 @@ body {
     font-size: 20px;
 }
 """
+
+
+def email_invitation(base_url: str, token: str):
+    """Invitation email with a link to choose account details."""
+    url = f"{base_url}/api/users/-/invite/?jwt={token}"
+    header = _("You are invited to Gramps Web")
+    description = _(
+        "A tree owner has invited you to join. Choose your username, full name, "
+        "and password using the link below. This invitation expires in 7 days."
+    )
+    action = _("Set up your account")
+    body = f"{header}\n\n{description}\n\n{url}\n"
+    body_html = email_htmltemplate(
+        header,
+        (
+            f'<div class="header">{escape(header)}</div>'
+            f'<div class="content"><p>{escape(description)}</p>'
+            f'<a class="button" href="{escape(url, quote=True)}">{escape(action)}</a></div>'
+        ),
+    )
+    return body, body_html
 
 
 def email_reset_pw(base_url: str, user_name: str, token: str):

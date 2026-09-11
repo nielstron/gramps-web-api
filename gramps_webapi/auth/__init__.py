@@ -808,6 +808,23 @@ class User(user_db.Model):  # type: ignore
         return f"<User(name='{self.name}', fullname='{self.fullname}')>"
 
 
+class UserInvitation(user_db.Model):  # type: ignore
+    """Pending, revocable invitations; no login account exists until accepted."""
+
+    __tablename__ = "user_invitations"
+
+    id = mapped_column(sa.String(36), primary_key=True)
+    email = mapped_column(sa.String, nullable=False)
+    role = mapped_column(sa.Integer, nullable=False)
+    tree = mapped_column(sa.String, nullable=True, index=True)
+    secret_hash = mapped_column(sa.String(64), nullable=False)
+    expires_at = mapped_column(sa.DateTime, nullable=False)
+
+    __table_args__ = (
+        sa.UniqueConstraint("email", "tree", name="uq_user_invitations_email_tree"),
+    )
+
+
 class AccessToken(user_db.Model):  # type: ignore
     """Persistent user access token table class for sqlalchemy."""
 

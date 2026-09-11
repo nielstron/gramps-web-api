@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -27,7 +28,6 @@ from gettext import gettext as _
 from http import HTTPStatus
 from typing import Any, Callable, Dict, List, Optional, Union
 
-import logging
 import sqlalchemy as sa
 from celery import Task, shared_task
 from celery.result import AsyncResult
@@ -41,12 +41,16 @@ from werkzeug.exceptions import HTTPException
 
 from gramps_webapi.api.search.indexer import SearchIndexer, SemanticSearchIndexer
 
-from ..auth import TaskTree, get_owner_emails
-from ..auth import user_db
+from ..auth import TaskTree, get_owner_emails, user_db
 from ..undodb import migrate as migrate_undodb
-from .check import check_database
-from .emails import email_confirm_email, email_new_user, email_reset_pw
 from ..verify_lib import run_verify
+from .check import check_database
+from .emails import (
+    email_confirm_email,
+    email_invitation,
+    email_new_user,
+    email_reset_pw,
+)
 from .export import prepare_options, run_export
 from .media import get_media_handler
 from .media_importer import MediaImporter
@@ -159,6 +163,20 @@ def clip_progress(x: float) -> float:
     if x < 0 or x >= 1:
         return -1
     return x
+
+
+@shared_task()
+def send_email_invitation(email: str, token: str):
+    """Send an owner-issued invitation."""
+    body, body_html = email_invitation(
+        base_url=get_config("BASE_URL").rstrip("/"), token=token
+    )
+    send_email(
+        subject=_("You are invited to Gramps Web"),
+        body=body,
+        body_html=body_html,
+        to=[email],
+    )
 
 
 @shared_task()
@@ -867,12 +885,13 @@ def process_chat(
 ) -> dict[str, Any]:
     """Process a chat query with the AI agent."""
     # import here to avoid error if AI dependencies are not installed
+    from pydantic_ai import ModelMessagesTypeAdapter
+
     from gramps_webapi.api.llm import (
         answer_with_agent,
         extract_metadata_from_result,
         sanitize_answer,
     )
-    from pydantic_ai import ModelMessagesTypeAdapter
 
     # Capture the task ID in the main worker thread before run_sync hands off
     # tool calls to a thread-pool executor. Celery stores self.request in a

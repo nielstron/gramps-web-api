@@ -74,6 +74,11 @@ from .resources.importers import (
     ImportersResource,
     RestoreFileResource,
 )
+from .resources.invitations import (
+    UserAcceptInvitationResource,
+    UserInvitationResource,
+    UserInvitationsResource,
+)
 from .resources.living import LivingDatesResource, LivingResource
 from .resources.media import MediaObjectResource, MediaObjectsResource
 from .resources.merge import (
@@ -620,6 +625,21 @@ register_endpt(
     tags=["Anniversaries"],
 )
 # User
+register_endpt(
+    UserInvitationsResource, "/users/-/invitations/", "user_invitations", tags=["Users"]
+)
+register_endpt(
+    UserInvitationResource,
+    "/users/-/invitations/<string:invitation_id>/",
+    "user_invitation",
+    tags=["Users"],
+)
+register_endpt(
+    UserAcceptInvitationResource,
+    "/users/-/invite/",
+    "accept_invitation",
+    tags=["Users"],
+)
 register_endpt(UsersResource, "/users/", "users", tags=["Users"])
 register_endpt(UserResource, "/users/<string:user_name>/", "user", tags=["Users"])
 register_endpt(

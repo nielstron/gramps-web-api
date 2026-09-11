@@ -22,17 +22,19 @@
 import os
 import re
 import unittest
-from unittest.mock import patch
-from unittest.mock import MagicMock
+from datetime import datetime, timedelta, timezone
+from unittest.mock import MagicMock, patch
 
 import pytest
 from celery.result import AsyncResult
 from gramps.cli.clidbman import CLIDbManager
 from gramps.gen.dbstate import DbState
 
+from gramps_webapi.api.tasks import send_email_invitation
 from gramps_webapi.app import create_app
 from gramps_webapi.auth import (
     User,
+    UserInvitation,
     add_user,
     create_oidc_account,
     delete_user,
@@ -130,6 +132,228 @@ class TestUser(unittest.TestCase):
             headers={"Authorization": f"Bearer {token}"},
         )
         assert rv.status_code == 405
+
+    def test_reset_password_form_preserves_application_prefix(self):
+        with patch("gramps_webapi.api.resources.user.run_task") as task:
+            self.client.post(BASE_URL + "/users/user/password/reset/trigger/")
+        token = task.call_args.kwargs["token"]
+        response = self.client.get(
+            BASE_URL + "/users/-/password/reset/",
+            query_string={"jwt": token},
+        )
+        assert response.status_code == 200
+        assert "window.location.pathname" in response.text
+        assert "fetch(`/api/" not in response.text
+
+    def test_invite_with_registration_disabled(self):
+        self.app.config["REGISTRATION_DISABLED"] = True
+        login = self.client.post(
+            BASE_URL + "/token/", json={"username": "owner", "password": "123"}
+        )
+        header = {"Authorization": f"Bearer {login.json['access_token']}"}
+        with patch("gramps_webapi.api.resources.invitations.run_task") as task:
+            response = self.client.post(
+                BASE_URL + "/users/-/invitations/",
+                headers=header,
+                json={"email": "invited@example.com", "role": ROLE_MEMBER},
+            )
+        assert response.status_code == 201, response.text
+        assert (
+            self.client.post(
+                BASE_URL + "/users/uninvited/register/",
+                json={
+                    "email": "public@example.com",
+                    "full_name": "Public",
+                    "password": "123",
+                    "tree": self.tree,
+                },
+            ).status_code
+            == 405
+        )
+        token = task.call_args.kwargs["token"]
+        invitation_header = {"Authorization": f"Bearer {token}"}
+        response = self.client.post(
+            BASE_URL + "/users/-/invite/",
+            headers=invitation_header,
+            json={
+                "name": "invited",
+                "full_name": "Invited Person",
+                "password": "chosen password",
+            },
+        )
+        assert response.status_code == 201, response.text
+        details = get_user_details("invited")
+        assert details["email"] == "invited@example.com"
+        assert details["full_name"] == "Invited Person"
+        assert details["role"] == ROLE_MEMBER
+        assert details["tree"] == self.tree
+        assert (
+            self.client.post(
+                BASE_URL + "/token/",
+                json={"username": "invited", "password": "chosen password"},
+            ).status_code
+            == 200
+        )
+        assert (
+            self.client.post(
+                BASE_URL + "/users/-/invite/",
+                headers=invitation_header,
+                json={"name": "replay", "full_name": "Replay", "password": "password"},
+            ).status_code
+            == 409
+        )
+
+    def _login_header(self, name="owner"):
+        response = self.client.post(
+            BASE_URL + "/token/", json={"username": name, "password": "123"}
+        )
+        return {"Authorization": f"Bearer {response.json['access_token']}"}
+
+    def _invite(self, email="invite@example.com", role=ROLE_MEMBER):
+        with patch("gramps_webapi.api.resources.invitations.run_task") as task:
+            response = self.client.post(
+                BASE_URL + "/users/-/invitations/",
+                headers=self._login_header(),
+                json={"email": email, "role": role},
+            )
+        assert response.status_code == 201, response.text
+        token = task.call_args.kwargs["token"]
+        return response.json, {"Authorization": f"Bearer {token}"}
+
+    def test_invitation_permissions_and_tree_boundaries(self):
+        endpoint = BASE_URL + "/users/-/invitations/"
+        payload = {"email": "invite@example.com", "role": ROLE_MEMBER}
+        assert self.client.post(endpoint, json=payload).status_code == 401
+        member = self._login_header("user")
+        assert (
+            self.client.post(endpoint, headers=member, json=payload).status_code == 403
+        )
+        owner = self._login_header()
+        assert (
+            self.client.post(
+                endpoint, headers=owner, json={**payload, "role": ROLE_ADMIN}
+            ).status_code
+            == 403
+        )
+        assert (
+            self.client.post(
+                endpoint, headers=owner, json={**payload, "tree": self.tree2}
+            ).status_code
+            == 403
+        )
+        for invalid in (
+            {"email": "invalid", "role": 1},
+            {**payload, "role": -1},
+            {**payload, "role": 6},
+        ):
+            assert (
+                self.client.post(endpoint, headers=owner, json=invalid).status_code
+                == 422
+            )
+        invitation, token_header = self._invite()
+        other = self._login_header("owner2")
+        assert self.client.get(endpoint, headers=other).json == []
+        assert self.client.get(endpoint, headers=member).status_code == 403
+        assert (
+            self.client.get(BASE_URL + "/users/", headers=token_header).status_code
+            == 401
+        )
+        detail_endpoint = endpoint + invitation["id"] + "/"
+        assert self.client.post(detail_endpoint, headers=other).status_code == 403
+        assert self.client.delete(detail_endpoint, headers=other).status_code == 403
+        assert (
+            self.client.post(
+                BASE_URL + "/users/-/password/reset/",
+                headers=token_header,
+                json={"new_password": "123"},
+            ).status_code
+            == 403
+        )
+        listed = self.client.get(endpoint, headers=owner).json
+        assert listed == [invitation]
+        assert "secret_hash" not in listed[0]
+
+    def test_invitation_resend_replaces_token_and_revoke_disables_it(self):
+        invitation, old_header = self._invite()
+        endpoint = BASE_URL + "/users/-/invitations/" + invitation["id"] + "/"
+        accept = BASE_URL + "/users/-/invite/"
+        with patch("gramps_webapi.api.resources.invitations.run_task") as task:
+            assert (
+                self.client.post(endpoint, headers=self._login_header()).status_code
+                == 200
+            )
+        header = {"Authorization": f"Bearer {task.call_args.kwargs['token']}"}
+        assert self.client.get(accept, headers=old_header).status_code == 409
+        assert self.client.get(accept, headers=header).status_code == 200
+        assert (
+            self.client.delete(endpoint, headers=self._login_header()).status_code
+            == 200
+        )
+        assert self.client.get(accept, headers=header).status_code == 409
+
+    def test_invitation_expiry_and_duplicate_email(self):
+        invitation, header = self._invite("INVITE@example.com")
+        owner = self._login_header()
+        for email in ("invite@example.com", "TEST@example.com"):
+            assert (
+                self.client.post(
+                    BASE_URL + "/users/-/invitations/",
+                    headers=owner,
+                    json={"email": email, "role": ROLE_MEMBER},
+                ).status_code
+                == 409
+            )
+        pending = user_db.session.get(UserInvitation, invitation["id"])
+        pending.expires_at = datetime.now(timezone.utc).replace(
+            tzinfo=None
+        ) - timedelta(seconds=1)
+        user_db.session.commit()
+        assert (
+            self.client.get(BASE_URL + "/users/-/invite/", headers=header).status_code
+            == 410
+        )
+
+    def test_invitation_rejects_role_tampering_and_preserves_link_after_name_collision(
+        self,
+    ):
+        _, header = self._invite()
+        endpoint = BASE_URL + "/users/-/invite/"
+        payload = {"name": "user", "full_name": "New Name", "password": "new password"}
+        assert (
+            self.client.post(
+                endpoint, headers=header, json={**payload, "role": ROLE_ADMIN}
+            ).status_code
+            == 422
+        )
+        assert (
+            self.client.post(endpoint, headers=header, json=payload).status_code == 409
+        )
+        for name in ("-", "_", " ", "bad/name"):
+            assert (
+                self.client.post(
+                    endpoint, headers=header, json={**payload, "name": name}
+                ).status_code
+                == 422
+            )
+        assert (
+            self.client.post(
+                endpoint, headers=header, json={**payload, "name": "available"}
+            ).status_code
+            == 201
+        )
+        assert get_user_details("available")["role"] == ROLE_MEMBER
+
+    def test_invitation_email_contains_prefixed_setup_link(self):
+        self.app.config["BASE_URL"] = "https://example.com/stammbaum/"
+        with patch("gramps_webapi.api.util.smtplib.SMTP_SSL") as smtp:
+            send_email_invitation(email="invite@example.com", token="test-token")
+        message = smtp.return_value.send_message.call_args.args[0]
+        assert message["To"] == "invite@example.com"
+        plain = message.get_body(preferencelist=("plain",)).get_content()
+        assert (
+            "https://example.com/stammbaum/api/users/-/invite/?jwt=test-token" in plain
+        )
+        assert "7 days" in plain
 
     def test_user_settings_are_private_to_the_authenticated_user(self):
         user_token = self.client.post(
