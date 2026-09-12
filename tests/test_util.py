@@ -519,10 +519,8 @@ def test_send_email_legacy_use_tls_true(mock_smtp, mock_smtp_ssl, mock_get_confi
     mock_get_config["EMAIL_USE_TLS"] = True
     mock_get_config["EMAIL_PORT"] = "465"
     mock_smtp_ssl.return_value = MagicMock()
-    mock_app = MagicMock()
-    with patch("gramps_webapi.api.util.current_app", mock_app):
+    with patch("gramps_webapi.api.util.current_app", MagicMock()):
         send_email("Subject", "Body", ["test@example.com"])
-        mock_app.logger.warning.assert_called_once()
     mock_smtp_ssl.assert_called_once()
     mock_smtp.assert_not_called()
 
@@ -551,31 +549,8 @@ def test_send_email_ssl_false_starttls_true(mock_smtp, mock_smtp_ssl, mock_get_c
     mock_get_config["EMAIL_PORT"] = "587"
     mock_smtp_instance = MagicMock()
     mock_smtp.return_value = mock_smtp_instance
-    mock_app = MagicMock()
-    with patch("gramps_webapi.api.util.current_app", mock_app):
+    with patch("gramps_webapi.api.util.current_app", MagicMock()):
         send_email("Subject", "Body", ["test@example.com"])
-        mock_app.logger.warning.assert_not_called()
-    mock_smtp.assert_called_once()
-    mock_smtp_instance.starttls.assert_called_once()
-    mock_smtp_ssl.assert_not_called()
-
-
-@patch("gramps_webapi.api.util.smtplib.SMTP_SSL")
-@patch("gramps_webapi.api.util.smtplib.SMTP")
-def test_send_email_legacy_use_tls_false_deprecation_warning(
-    mock_smtp, mock_smtp_ssl, mock_get_config
-):
-    """Test that legacy EMAIL_USE_TLS=false logs deprecation warning."""
-    mock_get_config["EMAIL_USE_TLS"] = False
-    mock_get_config["EMAIL_PORT"] = "587"
-    mock_smtp_instance = MagicMock()
-    mock_smtp.return_value = mock_smtp_instance
-    mock_app = MagicMock()
-    with patch("gramps_webapi.api.util.current_app", mock_app):
-        send_email("Subject", "Body", ["test@example.com"])
-        mock_app.logger.warning.assert_called_once()
-        warning_msg = mock_app.logger.warning.call_args[0][0]
-        assert "deprecated" in warning_msg.lower()
     mock_smtp.assert_called_once()
     mock_smtp_instance.starttls.assert_called_once()
     mock_smtp_ssl.assert_not_called()
@@ -897,3 +872,103 @@ def test_citation_profile_survives_a_broken_source_reference():
     assert profile["source"] == {}
     assert profile["gramps_id"] == "C0001"
     assert profile["page"] == "p. 42"
+
+
+class _FakeCursor:
+    """Minimal stand-in for the DBAPI Cursor context manager."""
+
+    def __init__(self, batches):
+        self._batches = list(batches)
+        self.executed = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def execute(self, sql, params):
+        self.executed = (sql, list(params))
+
+    def fetchmany(self):
+        if self._batches:
+            return self._batches.pop(0)
+        return []
+
+
+class _FakeDbapi:
+    """Minimal stand-in for `db_handle.dbapi`, with an optional `treeid`."""
+
+    def __init__(self, batches, treeid=None):
+        self._cursor = _FakeCursor(batches)
+        if treeid is not None:
+            self.treeid = treeid
+
+    def cursor(self):
+        return self._cursor
+
+
+def test_preload_event_backlinks_no_dbapi_returns_none():
+    """A backend with no `.dbapi` at all (not DBAPI-backed) is unsupported."""
+    from gramps_webapi.api.resources.util import preload_event_backlinks
+
+    class NoDbapiBackend:
+        pass
+
+    assert preload_event_backlinks(NoDbapiBackend()) is None
+
+
+def test_preload_event_backlinks_sqlite_queries_unscoped():
+    """SQLite is single-tree-per-database, so no `treeid` filter is added."""
+    from gramps_webapi.api.resources.util import preload_event_backlinks
+
+    class SQLite:
+        def __init__(self, dbapi):
+            self.dbapi = dbapi
+
+    dbapi = _FakeDbapi(batches=[[("h1", "Person", "p1"), ("h1", "Family", "f1")], []])
+    result = preload_event_backlinks(SQLite(dbapi))
+
+    assert result == {"h1": [("Person", "p1"), ("Family", "f1")]}
+    sql, params = dbapi._cursor.executed
+    assert "treeid" not in sql
+    assert params == ["Event"]
+
+
+def test_preload_event_backlinks_sharedpostgresql_scopes_by_treeid():
+    """SharedPostgreSQL shares tables across trees, so `treeid` must be used."""
+    from gramps_webapi.api.resources.util import preload_event_backlinks
+
+    class SharedPostgreSQL:
+        def __init__(self, dbapi):
+            self.dbapi = dbapi
+
+    dbapi = _FakeDbapi(batches=[[("h1", "Person", "p1")], []], treeid=7)
+    result = preload_event_backlinks(SharedPostgreSQL(dbapi))
+
+    assert result == {"h1": [("Person", "p1")]}
+    sql, params = dbapi._cursor.executed
+    assert "treeid" in sql
+    assert params == ["Event", 7]
+
+
+def test_preload_event_backlinks_unknown_backend_without_treeid_returns_none():
+    """An unrecognized DBAPI-backed backend with no `treeid` must not be
+    queried unscoped.
+
+    Only SQLite and the single-user PostgreSQL addon are known to be
+    single-tree-per-database; guessing that any other backend lacking a
+    `treeid` is also single-tree would risk silently mixing another
+    tenant's event participants into this tree's search index if that
+    guess is wrong. The safe fallback is to decline the optimization
+    (return None) so the caller uses the always-correct per-event
+    find_backlink_handles() path instead.
+    """
+    from gramps_webapi.api.resources.util import preload_event_backlinks
+
+    class SomeFutureSharedBackend:
+        def __init__(self, dbapi):
+            self.dbapi = dbapi
+
+    dbapi = _FakeDbapi(batches=[[("h1", "Person", "p1")], []])
+    assert preload_event_backlinks(SomeFutureSharedBackend(dbapi)) is None

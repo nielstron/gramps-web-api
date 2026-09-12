@@ -791,6 +791,7 @@ class NoteSchema(_Base):
     backlinks = fields.Nested(
         BacklinksSchema,
         metadata={"description": "Objects referring to this note, grouped by type."},
+        dump_only=True,
     )
     change = fields.Float(
         metadata={"description": "Unix timestamp of the last modification."},
@@ -799,6 +800,7 @@ class NoteSchema(_Base):
         metadata={
             "description": "Optional extended section with full referenced records."
         },
+        dump_only=True,
     )
     format = fields.Int(
         metadata={"description": "Format identifier (0=plain text, 1=pre-formatted)."},
@@ -839,6 +841,7 @@ class MediaSchema(_Base):
         metadata={
             "description": "Objects referring to this media item, grouped by type."
         },
+        dump_only=True,
     )
     change = fields.Float(
         metadata={"description": "Unix timestamp of the last modification."},
@@ -861,6 +864,7 @@ class MediaSchema(_Base):
         metadata={
             "description": "Optional extended section with full referenced records."
         },
+        dump_only=True,
     )
     gramps_id = fields.Str(
         metadata={"description": "Alternate user-managed identifier."},
@@ -884,6 +888,7 @@ class MediaSchema(_Base):
     profile = fields.Nested(
         MediaProfileSchema,
         metadata={"description": "Optional summary of media information."},
+        dump_only=True,
     )
     tag_list = fields.List(
         fields.Str(),
@@ -907,6 +912,7 @@ class RepositorySchema(_Base):
         metadata={
             "description": "Objects referring to this repository, grouped by type."
         },
+        dump_only=True,
     )
     change = fields.Float(
         metadata={"description": "Unix timestamp of the last modification."},
@@ -915,6 +921,7 @@ class RepositorySchema(_Base):
         metadata={
             "description": "Optional extended section with full referenced records."
         },
+        dump_only=True,
     )
     gramps_id = fields.Str(
         metadata={"description": "Alternate user-managed identifier."},
@@ -969,6 +976,7 @@ class SourceSchema(_Base):
     backlinks = fields.Nested(
         BacklinksSchema,
         metadata={"description": "Objects referring to this source, grouped by type."},
+        dump_only=True,
     )
     change = fields.Float(
         metadata={"description": "Unix timestamp of the last modification."},
@@ -977,6 +985,7 @@ class SourceSchema(_Base):
         metadata={
             "description": "Optional extended section with full referenced records."
         },
+        dump_only=True,
     )
     gramps_id = fields.Str(
         metadata={"description": "Alternate user-managed identifier."},
@@ -996,6 +1005,7 @@ class SourceSchema(_Base):
     profile = fields.Nested(
         SourceProfileSchema,
         metadata={"description": "Optional summary of source information."},
+        dump_only=True,
     )
     pubinfo = fields.Str(
         metadata={"description": "Publication information."},
@@ -1029,6 +1039,7 @@ class CitationSchema(_Base):
         metadata={
             "description": "Objects referring to this citation, grouped by type."
         },
+        dump_only=True,
     )
     change = fields.Float(
         metadata={"description": "Unix timestamp of the last modification."},
@@ -1044,6 +1055,7 @@ class CitationSchema(_Base):
         metadata={
             "description": "Optional extended section with full referenced records."
         },
+        dump_only=True,
     )
     gramps_id = fields.Str(
         metadata={"description": "Alternate user-managed identifier."},
@@ -1066,6 +1078,7 @@ class CitationSchema(_Base):
     profile = fields.Nested(
         CitationProfileSchema,
         metadata={"description": "Optional summary of citation information."},
+        dump_only=True,
     )
     source_handle = fields.Str(
         metadata={"description": "Handle of the source being cited."},
@@ -1094,6 +1107,7 @@ class PlaceSchema(_Base):
     backlinks = fields.Nested(
         BacklinksSchema,
         metadata={"description": "Objects referring to this place, grouped by type."},
+        dump_only=True,
     )
     change = fields.Float(
         metadata={"description": "Unix timestamp of the last modification."},
@@ -1109,6 +1123,7 @@ class PlaceSchema(_Base):
         metadata={
             "description": "Optional extended section with full referenced records."
         },
+        dump_only=True,
     )
     gramps_id = fields.Str(
         metadata={"description": "Alternate user-managed identifier."},
@@ -1145,6 +1160,7 @@ class PlaceSchema(_Base):
     profile = fields.Nested(
         PlaceProfileSchema,
         metadata={"description": "Optional summary of place information."},
+        dump_only=True,
     )
     tag_list = fields.List(
         fields.Str(),
@@ -1173,6 +1189,7 @@ class EventSchema(_Base):
     backlinks = fields.Nested(
         BacklinksSchema,
         metadata={"description": "Objects referring to this event, grouped by type."},
+        dump_only=True,
     )
     change = fields.Float(
         metadata={"description": "Unix timestamp of the last modification."},
@@ -1192,6 +1209,7 @@ class EventSchema(_Base):
         metadata={
             "description": "Optional extended section with full referenced records."
         },
+        dump_only=True,
     )
     gramps_id = fields.Str(
         metadata={"description": "Alternate user-managed identifier."},
@@ -1214,6 +1232,7 @@ class EventSchema(_Base):
     profile = fields.Nested(
         EventProfileSchema,
         metadata={"description": "Optional summary of event information."},
+        dump_only=True,
     )
     tag_list = fields.List(
         fields.Str(),
@@ -1238,6 +1257,7 @@ class FamilySchema(_Base):
     backlinks = fields.Nested(
         BacklinksSchema,
         metadata={"description": "Objects referring to this family, grouped by type."},
+        dump_only=True,
     )
     change = fields.Float(
         metadata={"description": "Unix timestamp of the last modification."},
@@ -1258,6 +1278,7 @@ class FamilySchema(_Base):
         metadata={
             "description": "Optional extended section with full referenced records."
         },
+        dump_only=True,
     )
     father_handle = fields.Str(
         metadata={"description": "Handle of the father."},
@@ -1287,6 +1308,7 @@ class FamilySchema(_Base):
     profile = fields.Nested(
         FamilyProfileSchema,
         metadata={"description": "Optional summary of family information."},
+        dump_only=True,
     )
     tag_list = fields.List(
         fields.Str(),
@@ -1321,6 +1343,7 @@ class PersonSchema(_Base):
     backlinks = fields.Nested(
         BacklinksSchema,
         metadata={"description": "Objects referring to this person, grouped by type."},
+        dump_only=True,
     )
     birth_ref_index = fields.Int(
         metadata={
@@ -1347,6 +1370,7 @@ class PersonSchema(_Base):
         metadata={
             "description": "Optional extended section with full referenced records."
         },
+        dump_only=True,
     )
     family_list = fields.List(
         fields.Str(),
@@ -1391,6 +1415,7 @@ class PersonSchema(_Base):
     profile = fields.Nested(
         PersonProfileSchema,
         metadata={"description": "Optional summary of key biographical information."},
+        dump_only=True,
     )
     tag_list = fields.List(
         fields.Str(),
@@ -1895,6 +1920,50 @@ class UndoTransactionSchema(_Base):
     )
 
 
+class ObjectChangeSchema(_Base):
+    """A single change to one object, as returned by the object history endpoint."""
+
+    id = fields.Int(
+        metadata={"description": "Change ID (unique only within its connection)."},
+    )
+    connection = fields.Raw(
+        metadata={"description": "Internal connection object."},
+    )
+    transaction_id = fields.Int(
+        allow_none=True,
+        metadata={
+            "description": "ID of the transaction this change was part of, if known."
+        },
+    )
+    obj_class = fields.Str(
+        metadata={"description": "Object class name (e.g. 'Person', 'Event')."},
+    )
+    obj_handle = fields.Str(
+        metadata={"description": "Handle of the changed object."},
+    )
+    ref_handle = fields.Str(
+        metadata={
+            "description": "Handle of a referenced object, if this change is a reference update."
+        },
+    )
+    trans_type = fields.Int(
+        metadata={"description": "Change type: 0 (add), 1 (update), or 2 (delete)."},
+    )
+    timestamp = fields.Float(
+        metadata={"description": "Unix timestamp when the change was committed."},
+    )
+    old_data = fields.Raw(
+        metadata={
+            "description": "Object state before the change (only included if requested)."
+        },
+    )
+    new_data = fields.Raw(
+        metadata={
+            "description": "Object state after the change (only included if requested)."
+        },
+    )
+
+
 class FilterRuleDescriptionSchema(_Base):
     """Description of a built-in Gramps filter rule."""
 
@@ -2087,6 +2156,123 @@ class ResearcherSchema(_Base):
     street = fields.Str(metadata={"description": "Street address."})
 
 
+class DeprecationSchema(_Base):
+    """A deprecated configuration option the server currently relies on."""
+
+    option = fields.Str(
+        metadata={"description": "Name of the deprecated configuration option."},
+    )
+    replacement = fields.Str(
+        metadata={"description": "Name of the option to use instead."},
+    )
+    message = fields.Str(
+        metadata={"description": "Human-readable description of the deprecation."},
+    )
+    removed_in = fields.Str(
+        metadata={
+            "description": "Version of Gramps Web API in which the option will stop"
+            " working."
+        },
+    )
+
+
+class RateLimitSchema(_Base):
+    """A rate limit expressed as a number of requests per time window."""
+
+    amount = fields.Int(
+        metadata={"description": "Number of requests allowed per time window."},
+    )
+    window_seconds = fields.Int(
+        metadata={"description": "Length of the time window in seconds."},
+    )
+
+
+class ThumbnailSupportSchema(_Base):
+    """Availability of thumbnailing for file types needing extra dependencies."""
+
+    pdf = fields.Bool(
+        metadata={
+            "description": "Whether thumbnails can be generated for PDF files"
+            " (requires pdf2image and Poppler)."
+        },
+    )
+    video = fields.Bool(
+        metadata={
+            "description": "Whether thumbnails can be generated for video files"
+            " (requires ffmpeg-python and the ffmpeg binary)."
+        },
+    )
+
+
+class ServerSchema(_Base):
+    """Server capabilities and configuration relevant to clients."""
+
+    multi_tree = fields.Bool(
+        metadata={"description": "Whether the server hosts multiple family trees."},
+    )
+    task_queue = fields.Bool(
+        metadata={
+            "description": "Whether a task queue is available, so that long-running"
+            " operations return a task rather than a result."
+        },
+    )
+    ocr = fields.Bool(
+        metadata={"description": "Whether OCR of images is available."},
+    )
+    ocr_languages = fields.List(
+        fields.Str(),
+        metadata={"description": "Language codes available for OCR."},
+    )
+    semantic_search = fields.Bool(
+        metadata={"description": "Whether semantic search is available."},
+    )
+    chat = fields.Bool(
+        metadata={"description": "Whether the AI chat endpoint is available."},
+    )
+    face_detection = fields.Bool(
+        metadata={
+            "description": "Whether face detection in images is available"
+            " (requires OpenCV and NumPy)."
+        },
+    )
+    thumbnails = fields.Nested(
+        ThumbnailSupportSchema,
+        metadata={
+            "description": "Availability of thumbnailing for file types needing"
+            " extra dependencies."
+        },
+    )
+    email = fields.Bool(
+        metadata={
+            "description": "Whether the server is configured to send e-mails."
+            " If false, flows relying on e-mail (such as enabling new users) will"
+            " not work."
+        },
+    )
+    max_media_archive_upload_bytes = fields.Int(
+        metadata={
+            "description": "Configured maximum size of an uploaded media archive in"
+            " bytes. Absent if no limit is configured. Note that uploads are"
+            " additionally limited by the free disk space available to the server, so"
+            " an upload smaller than this value can still be rejected."
+        },
+    )
+    max_thumbnail_file_bytes = fields.Int(
+        metadata={
+            "description": "Maximum size in bytes of a media file for which"
+            " thumbnails will be generated. Larger files are rejected by the"
+            " thumbnail endpoints."
+        },
+    )
+    rate_limit_media_archive = fields.List(
+        fields.Nested(RateLimitSchema),
+        metadata={
+            "description": "Rate limits, per user, for creating a media archive for"
+            " download. All of the limits apply simultaneously."
+        },
+    )
+
+
 class MetadataSchema(_Base):
     """Server and database metadata returned by /api/metadata/."""
 
@@ -2095,6 +2281,12 @@ class MetadataSchema(_Base):
     )
     default_person = fields.Str(
         metadata={"description": "Handle of the default person."},
+    )
+    deprecations = fields.List(
+        fields.Nested(DeprecationSchema),
+        metadata={
+            "description": "Deprecated configuration options in use (admins only)."
+        },
     )
     gramps = fields.Dict(
         metadata={"description": "Information about the active Gramps installation."},
@@ -2122,7 +2314,8 @@ class MetadataSchema(_Base):
     search = fields.Dict(
         metadata={"description": "Information about search-related libraries."},
     )
-    server = fields.Dict(
+    server = fields.Nested(
+        ServerSchema,
         metadata={"description": "Information about server capabilities."},
     )
     surnames = fields.List(
