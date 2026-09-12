@@ -22,15 +22,20 @@
 import httpx
 import pytest
 from flask import Flask
-from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError, UnexpectedModelBehavior
+from pydantic_ai.exceptions import (
+    ModelAPIError,
+    ModelHTTPError,
+    UnexpectedModelBehavior,
+)
 from werkzeug.exceptions import HTTPException
 
 from gramps_webapi.api.llm import answer_with_agent
 
 
 @pytest.fixture(name="app")
-def fixture_app():
+def fixture_app(monkeypatch):
     """A minimal app providing the LLM config."""
+    monkeypatch.setattr("gramps_webapi.ai_config.config_get", lambda key: None)
     app = Flask(__name__)
     app.config.update(LLM_MODEL="test-model", LLM_BASE_URL=None, LLM_SYSTEM_PROMPT=None)
     return app

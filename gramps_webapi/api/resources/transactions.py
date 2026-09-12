@@ -43,6 +43,12 @@ trans_code = {"delete": TXNDEL, "add": TXNADD, "update": TXNUPD}
 class TransactionsQueryArgs(Schema):
     """Query arguments for POST /transactions/."""
 
+    simplified = fields.Boolean(
+        load_default=False,
+        metadata={
+            "description": "Accept the normal object API representation instead of raw Gramps serialization."
+        },
+    )
     undo = fields.Boolean(
         load_default=False,
         metadata={"description": "If true, apply the inverse of the transaction."},
@@ -88,6 +94,7 @@ class TransactionsResource(ProtectedResource):
                 user_id=user_id,
                 payload=payload,
                 force=args["force"],
+                simplified=args["simplified"],
                 message=args["message"],
             )
             if isinstance(task, AsyncResult):
@@ -95,7 +102,12 @@ class TransactionsResource(ProtectedResource):
             return task, 200
         try:
             trans_dict = process_transactions(
-                tree=tree, user_id=user_id, payload=payload, force=args["force"], message=args["message"]
+                tree=tree,
+                user_id=user_id,
+                payload=payload,
+                force=args["force"],
+                message=args["message"],
+                simplified=args["simplified"],
             )
         except ValueError as exc:
             abort_with_message(400, str(exc))

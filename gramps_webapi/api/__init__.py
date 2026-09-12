@@ -42,6 +42,7 @@ from .resources.bookmarks import (
 from .resources.chat import ChatResource
 from .resources.citations import CitationResource, CitationsResource
 from .resources.config import (
+    AiConfigResource,
     ConfigResource,
     ConfigsResource,
     EmailConfigResource,
@@ -137,7 +138,7 @@ from .resources.reports import (
 )
 from .resources.repositories import RepositoriesResource, RepositoryResource
 from .resources.search import SearchIndexResource, SearchResource
-from .resources.sources import SourceResource, SourcesResource
+from .resources.sources import SourceAuthorResource, SourceResource, SourcesResource
 from .resources.tags import TagResource, TagsResource
 from .resources.tasks import TaskListResource, TaskResource
 from .resources.timeline import (
@@ -472,6 +473,12 @@ register_endpt(
     MergeSourceResource,
     "/sources/<string:phoenix_handle>/merge/<string:titanic_handle>",
     "merge-source",
+    tags=["Sources"],
+)
+register_endpt(
+    SourceAuthorResource,
+    "/sources/<string:handle>/author/",
+    "source-author",
     tags=["Sources"],
 )
 # Repositories
@@ -852,6 +859,7 @@ register_endpt(ChatResource, "/chat/", "chat", tags=["Chat"])
 
 # Config
 register_endpt(ConfigsResource, "/config/", "configs", tags=["Config"])
+register_endpt(AiConfigResource, "/config/ai/", "ai_config", tags=["Config"])
 register_endpt(EmailConfigResource, "/config/email/", "email_config", tags=["Config"])
 register_endpt(
     EmailTestResource,

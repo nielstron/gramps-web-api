@@ -22,8 +22,7 @@
 import os
 import re
 import unittest
-from unittest.mock import patch
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from gramps.cli.clidbman import CLIDbManager
 from gramps.gen.dbstate import DbState
@@ -241,3 +240,122 @@ class TestConfig(unittest.TestCase):
             body="This is a test email sent from the Gramps Web administration settings.",
             to=["admin@example.com"],
         )
+
+    def test_ai_settings_permissions_validation_and_secret_redaction(self):
+        payload = {
+            "enabled": True,
+            "chat_model": "qwen3:8b",
+            "chat_base_url": "http://ollama:11434/v1",
+            "chat_api_key": "chat-secret",
+            "embedding_model": "embedding-model",
+            "embedding_base_url": "http://ollama:11434",
+            "embedding_api_key": "embedding-secret",
+        }
+        endpoint = f"{BASE_URL}/config/ai/"
+        assert self.client.get(endpoint, headers=self.header_member).status_code == 403
+        assert (
+            self.client.put(
+                endpoint, headers=self.header_member, json=payload
+            ).status_code
+            == 403
+        )
+        for patch_data in [
+            {"chat_model": ""},
+            {"chat_base_url": "file:///etc/passwd"},
+            {"chat_base_url": "https://secret@example.com"},
+        ]:
+            assert (
+                self.client.put(
+                    endpoint, headers=self.header_owner, json={**payload, **patch_data}
+                ).status_code
+                == 422
+            )
+        response = self.client.put(endpoint, headers=self.header_owner, json=payload)
+        assert response.status_code == 200
+        assert response.json["chat_api_key_set"] is True
+        assert response.json["embedding_api_key_set"] is True
+        assert "secret" not in response.text
+        assert (
+            "secret"
+            not in self.client.get(
+                f"{BASE_URL}/config/", headers=self.header_owner
+            ).text
+        )
+        assert (
+            self.client.get(
+                f"{BASE_URL}/config/AI_SETTINGS/", headers=self.header_owner
+            ).status_code
+            == 404
+        )
+        assert (
+            self.client.put(
+                f"{BASE_URL}/config/AI_SETTINGS/",
+                headers=self.header_owner,
+                json={"value": "{}"},
+            ).status_code
+            == 404
+        )
+        from gramps_webapi.api.util import get_config
+
+        assert get_config("LLM_MODEL") == "qwen3:8b"
+        assert get_config("LLM_API_KEY") == "chat-secret"
+        payload.pop("chat_api_key")
+        payload["embedding_api_key"] = ""
+        payload["enabled"] = False
+        response = self.client.put(endpoint, headers=self.header_owner, json=payload)
+        assert response.status_code == 200
+        assert response.json["chat_api_key_set"] is True
+        assert response.json["embedding_api_key_set"] is False
+        assert get_config("LLM_MODEL") == ""
+        assert get_config("VECTOR_EMBEDDING_MODEL") == ""
+        # Settings retain the model while disabled and are shared by a new app context.
+        with self.app.app_context():
+            from gramps_webapi.ai_config import get_ai_config
+
+            assert get_ai_config()["LLM_MODEL"] == "qwen3:8b"
+
+    def test_embedding_settings_refresh_cached_function_without_restart(self):
+        from gramps_webapi.api.search.embeddings import get_embedding_function
+
+        endpoint = f"{BASE_URL}/config/ai/"
+        payload = {
+            "enabled": True,
+            "chat_model": "model",
+            "chat_base_url": "http://provider/v1",
+            "embedding_model": "vectors",
+            "embedding_base_url": "http://provider/v1",
+            "embedding_api_key": "first",
+        }
+        assert (
+            self.client.put(
+                endpoint, headers=self.header_owner, json=payload
+            ).status_code
+            == 200
+        )
+        first, model = get_embedding_function()
+        assert model == "vectors"
+        assert get_embedding_function()[0] is first
+        payload["embedding_api_key"] = "second"
+        assert (
+            self.client.put(
+                endpoint, headers=self.header_owner, json=payload
+            ).status_code
+            == 200
+        )
+        second, _model = get_embedding_function()
+        assert second is not first
+        with patch("gramps_webapi.api.search.embeddings.requests.post") as post:
+            post.return_value.json.return_value = {
+                "data": [{"index": 0, "embedding": [0.1, 0.2]}]
+            }
+            assert second(["test"])[0] == [0.1, 0.2]
+            assert post.call_args.kwargs["headers"]["Authorization"] == "Bearer second"
+        payload["enabled"] = False
+        assert (
+            self.client.put(
+                endpoint, headers=self.header_owner, json=payload
+            ).status_code
+            == 200
+        )
+        with self.assertRaises(ValueError):
+            get_embedding_function()

@@ -35,7 +35,7 @@ from gramps.gen.db.base import DbReadBase
 from gramps.gen.db.generic import DbGeneric
 from gramps.gen.db.utils import get_dbid_from_path
 from gramps.gen.utils.grampslocale import INCOMPLETE_TRANSLATIONS
-from marshmallow import Schema, RAISE
+from marshmallow import RAISE, Schema
 from webargs import fields
 
 from gramps_webapi.const import TREE_MULTI, VERSION
@@ -45,8 +45,11 @@ from ...dbmanager import WebDbManager
 from ..auth import has_permissions, require_permissions
 from ..blueprint import api_blueprint
 from ..deprecations import check_deprecations
-from ..search import get_search_indexer, get_semantic_search_indexer
-from ..search import _get_search_index_db_url
+from ..search import (
+    _get_search_index_db_url,
+    get_search_indexer,
+    get_semantic_search_indexer,
+)
 from ..search.metadata import get_stored_model_name
 from ..util import get_config, get_db_handle, get_tree_from_jwt_or_fail
 from . import ProtectedResource
@@ -193,8 +196,8 @@ class MetadataResource(ProtectedResource, GrampsJSONEncoder):
         db_type = _get_dbid_from_tree_id(tree_id)
         is_multi_tree = current_app.config["TREE"] == TREE_MULTI
         has_task_queue = bool(current_app.config["CELERY_CONFIG"])
-        has_semantic_search = bool(current_app.config["VECTOR_EMBEDDING_MODEL"])
-        has_chat = has_semantic_search and bool(current_app.config["LLM_MODEL"])
+        has_semantic_search = bool(get_config("VECTOR_EMBEDDING_MODEL"))
+        has_chat = has_semantic_search and bool(get_config("LLM_MODEL"))
 
         has_ocr, ocr_languages = _get_ocr_info()
         searcher = get_search_indexer(tree_id)
@@ -205,8 +208,8 @@ class MetadataResource(ProtectedResource, GrampsJSONEncoder):
             "version": sifts.__version__,
             "count": search_count,
         }
-        if current_app.config.get("VECTOR_EMBEDDING_MODEL"):
-            configured_model = current_app.config["VECTOR_EMBEDDING_MODEL"]
+        if get_config("VECTOR_EMBEDDING_MODEL"):
+            configured_model = get_config("VECTOR_EMBEDDING_MODEL")
             try:
                 db_url = _get_search_index_db_url()
                 stored_model = get_stored_model_name(db_url, tree_id)

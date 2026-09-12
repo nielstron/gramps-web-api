@@ -59,6 +59,7 @@ TEST_EMPTY_GRAMPS_AUTH_CONFIG = _get_resource_path(
 
 # allowed db config keys
 DB_CONFIG_ALLOWED_KEYS = [
+    "AI_SETTINGS",
     "EMAIL_HOST",
     "EMAIL_PORT",
     "EMAIL_HOST_USER",

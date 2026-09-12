@@ -40,7 +40,16 @@ class ConfigsResource(ProtectedResource):
     def get(self):
         """Get all config settings."""
         require_permissions([PERM_VIEW_SETTINGS])
-        return jsonify(config_get_all()), 200
+        return (
+            jsonify(
+                {
+                    key: value
+                    for key, value in config_get_all().items()
+                    if key != "AI_SETTINGS"
+                }
+            ),
+            200,
+        )
 
 
 class ConfigValueArgs(Schema):
@@ -58,6 +67,8 @@ class ConfigResource(ProtectedResource):
     def get(self, key: str):
         """Get a config setting."""
         require_permissions([PERM_VIEW_SETTINGS])
+        if key == "AI_SETTINGS":
+            abort(404)
         if key not in DB_CONFIG_ALLOWED_KEYS:
             abort(404)
         val = config_get(key)
@@ -69,6 +80,8 @@ class ConfigResource(ProtectedResource):
     def put(self, args, key: str):
         """Update a config setting."""
         require_permissions([PERM_EDIT_SETTINGS])
+        if key == "AI_SETTINGS":
+            abort(404)
         try:
             config_set(key=key, value=args["value"])
         except ValueError:
@@ -78,6 +91,8 @@ class ConfigResource(ProtectedResource):
     def delete(self, key: str):
         """Delete a config setting."""
         require_permissions([PERM_EDIT_SETTINGS])
+        if key == "AI_SETTINGS":
+            abort(404)
         try:
             if config_get(key=key) is None:
                 abort(404)
@@ -174,3 +189,93 @@ class EmailTestResource(ProtectedResource):
         except (ValueError, smtplib.SMTPException) as error:
             abort(502, description=str(error))
         return jsonify({"message": "Test email sent."}), 200
+
+
+class AiConfigArgs(Schema):
+    """OpenAI-compatible chat and local or remote embedding settings."""
+
+    enabled = fields.Bool(required=True)
+    chat_model = fields.Str(required=True, validate=validate.Length(max=300))
+    chat_base_url = fields.Str(required=True, validate=validate.Length(max=2048))
+    chat_api_key = fields.Str(
+        load_default=None, allow_none=True, validate=validate.Length(max=4096)
+    )
+    embedding_model = fields.Str(required=True, validate=validate.Length(max=300))
+    embedding_base_url = fields.Str(required=True, validate=validate.Length(max=2048))
+    embedding_api_key = fields.Str(
+        load_default=None, allow_none=True, validate=validate.Length(max=4096)
+    )
+
+
+AI_FIELDS = {
+    "enabled": "AI_ENABLED",
+    "chat_model": "LLM_MODEL",
+    "chat_base_url": "LLM_BASE_URL",
+    "chat_api_key": "LLM_API_KEY",
+    "embedding_model": "VECTOR_EMBEDDING_MODEL",
+    "embedding_base_url": "VECTOR_EMBEDDING_BASE_URL",
+    "embedding_api_key": "VECTOR_EMBEDDING_API_KEY",
+}
+
+
+def _get_ai_settings():
+    from ...ai_config import get_ai_config
+
+    config = get_ai_config()
+    result = {}
+    for field, key in AI_FIELDS.items():
+        if field.endswith("api_key"):
+            result[f"{field}_set"] = bool(config[key])
+        else:
+            result[field] = config[key] if field == "enabled" else config[key] or ""
+    result["enabled"] = bool(
+        result["enabled"] and result["chat_model"] and result["embedding_model"]
+    )
+    return result
+
+
+class AiConfigResource(ProtectedResource):
+    """Server-wide AI settings; credentials are write-only."""
+
+    def get(self):
+        require_permissions([PERM_VIEW_SETTINGS])
+        return jsonify(_get_ai_settings()), 200
+
+    @api_blueprint.arguments(AiConfigArgs, location="json")
+    def put(self, args):
+        import json
+        from urllib.parse import urlsplit
+
+        from ...ai_config import get_ai_config
+
+        require_permissions([PERM_EDIT_SETTINGS])
+        for field in ("chat_base_url", "embedding_base_url"):
+            if args[field]:
+                url = urlsplit(args[field])
+                if (
+                    url.scheme not in {"http", "https"}
+                    or not url.hostname
+                    or url.username
+                    or url.password
+                    or url.query
+                    or url.fragment
+                ):
+                    abort(
+                        422,
+                        description="Use an HTTP(S) base URL without credentials, query parameters, or fragments.",
+                    )
+        if args["enabled"] and (
+            not args["chat_model"].strip() or not args["embedding_model"].strip()
+        ):
+            abort(
+                422, description="Chat and embedding models are required to enable AI."
+            )
+        config = get_ai_config()
+        for field, key in AI_FIELDS.items():
+            if args[field] is not None:
+                config[key] = (
+                    args[field].strip() if isinstance(args[field], str) else args[field]
+                )
+        # One write makes model, endpoint and credential changes atomic across workers.
+        config_set("AI_SETTINGS", json.dumps(config))
+        return jsonify(_get_ai_settings()), 200

@@ -68,6 +68,7 @@ from .resources.util import (
     abort_with_message,
     app_has_semantic_search,
     dry_run_import,
+    fix_object_dict,
     run_import,
     transaction_to_json,
 )
@@ -430,7 +431,7 @@ def import_file(
             self, title="Updating full-text search index..."
         ),
     )
-    if current_app.config.get("VECTOR_EMBEDDING_MODEL"):
+    if get_config("VECTOR_EMBEDDING_MODEL"):
         _search_reindex_incremental(
             tree=tree,
             user_id=user_id,
@@ -495,7 +496,7 @@ def restore_backup(
             self, title="Updating full-text search index..."
         ),
     )
-    if current_app.config.get("VECTOR_EMBEDDING_MODEL"):
+    if get_config("VECTOR_EMBEDDING_MODEL"):
         _search_reindex_incremental(
             tree=tree,
             user_id=user_id,
@@ -710,7 +711,7 @@ def delete_objects(
             self, title="Updating full-text search index..."
         ),
     )
-    if current_app.config.get("VECTOR_EMBEDDING_MODEL"):
+    if get_config("VECTOR_EMBEDDING_MODEL"):
         _search_reindex_incremental(
             tree=tree,
             user_id=user_id,
@@ -729,6 +730,7 @@ def process_transactions(
     payload: list[dict],
     force: bool,
     message: str = "Raw transaction",
+    simplified: bool = False,
 ):
     """Process a set of database transactions, updating search indices as needed."""
     num_people_deleted = sum(
@@ -750,6 +752,12 @@ def process_transactions(
                     trans_type = item["type"]
                     handle = item["handle"]
                     old_data = item["old"]
+                    if simplified and old_data:
+                        old_data = object_to_dict(
+                            gramps_object_from_dict(
+                                fix_object_dict(old_data, class_name)
+                            )
+                        )
                     if not force and not old_unchanged(
                         db_handle, class_name, handle, old_data
                     ):
@@ -758,7 +766,13 @@ def process_transactions(
                         raise ValueError("Object has changed")
                     new_data = item["new"]
                     if new_data:
+                        if simplified:
+                            new_data = fix_object_dict(new_data, class_name)
                         new_obj = gramps_object_from_dict(new_data)
+                        if simplified and trans_type == "add" and not new_obj.gramps_id:
+                            new_obj.gramps_id = db_handle.method(
+                                "find_next_%s_gramps_id", class_name
+                            )()
                     if trans_type == "delete":
                         handle_delete(trans, class_name, handle)
                         if (

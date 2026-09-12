@@ -1,8 +1,14 @@
 """Functions to compute vector embeddings."""
 
+from threading import RLock
 from typing import Callable, List, Optional
 
 import requests
+from flask import current_app
+
+from ...ai_config import get_ai_config
+
+_model_lock = RLock()
 
 from ..util import get_logger
 
@@ -46,3 +52,28 @@ def create_remote_embedding_function(
         return [item["embedding"] for item in data]
 
     return _embed
+
+
+def get_embedding_function():
+    """Lazily load one model per process, replacing it when settings change."""
+    config = get_ai_config()
+    model = config["VECTOR_EMBEDDING_MODEL"]
+    if not config["AI_ENABLED"] or not model:
+        raise ValueError("VECTOR_EMBEDDING_MODEL option not set")
+    signature = (
+        model,
+        config["VECTOR_EMBEDDING_BASE_URL"],
+        config["VECTOR_EMBEDDING_API_KEY"],
+    )
+    with _model_lock:
+        cached = current_app.extensions.get("gramps_embedding")
+        if cached is not None and cached[0] == signature:
+            return cached[1], model
+        if signature[1]:
+            function = create_remote_embedding_function(
+                signature[1], model, signature[2]
+            )
+        else:
+            function = load_model(model).encode
+        current_app.extensions["gramps_embedding"] = (signature, function)
+        return function, model

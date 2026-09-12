@@ -88,6 +88,8 @@ class DefaultConfig(object):
     RATE_LIMIT_MEDIA_ARCHIVE = "1 per day"
     REGISTRATION_DISABLED = False
     LOG_LEVEL = "INFO"
+    AI_ENABLED = True
+    LLM_API_KEY = None
     LLM_BASE_URL = None
     LLM_MODEL = ""
     LLM_MAX_CONTEXT_LENGTH = 50000

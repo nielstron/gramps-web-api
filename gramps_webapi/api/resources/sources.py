@@ -20,12 +20,17 @@
 
 """Source API resource."""
 
+from flask import abort, jsonify
+from gramps.gen.errors import HandleError
+
+from ...auth import User
+from ..util import get_tree_from_jwt_or_fail
+from . import ProtectedResource
 from .base import (
     GrampsObjectProtectedResource,
     GrampsObjectResourceHelper,
     GrampsObjectsProtectedResource,
 )
-
 
 
 class SourceResourceHelper(GrampsObjectResourceHelper):
@@ -40,3 +45,41 @@ class SourceResource(GrampsObjectProtectedResource, SourceResourceHelper):
 
 class SourcesResource(GrampsObjectsProtectedResource, SourceResourceHelper):
     """Sources resource."""
+
+
+class SourceAuthorResource(ProtectedResource, SourceResourceHelper):
+    """Public author identity for a source visible to the current reader."""
+
+    def get(self, handle):
+        try:
+            source = self.get_object_from_handle(handle)
+        except HandleError:
+            abort(404)
+        if source is None:
+            abort(404)
+        result = {"name": source.get_author(), "username": None, "person_id": None}
+        user_id = next(
+            (
+                a.get_value()
+                for a in source.get_attribute_list()
+                if str(a.get_type()) == "Blog author"
+            ),
+            None,
+        )
+        if not user_id:
+            return jsonify(result)
+        user = User.query.filter_by(
+            id=user_id, tree=get_tree_from_jwt_or_fail()
+        ).first()
+        if user is None:
+            return jsonify(result)
+        result.update(name=user.fullname or user.name, username=user.name)
+        person_id = (user.settings or {}).get("homePerson")
+        if person_id:
+            try:
+                person = self.db_handle.get_person_from_gramps_id(person_id)
+            except HandleError:
+                person = None
+            if person is not None:
+                result["person_id"] = person.gramps_id
+        return jsonify(result)

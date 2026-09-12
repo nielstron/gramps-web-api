@@ -682,6 +682,13 @@ def get_config(key: str) -> Any:
     If exists, returns the config item from the database.
     Else, uses the app.config dictionary.
     """
+    from ..ai_config import AI_CONFIG_KEYS, get_ai_config
+
+    if key in AI_CONFIG_KEYS:
+        config = get_ai_config()
+        if key in {"LLM_MODEL", "VECTOR_EMBEDDING_MODEL"} and not config["AI_ENABLED"]:
+            return ""
+        return config[key]
     if key in DB_CONFIG_ALLOWED_KEYS:
         val = config_get(key)
         if val is not None:

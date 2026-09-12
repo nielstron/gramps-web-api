@@ -85,6 +85,7 @@ from ..media import get_media_handler
 from ..util import (
     UserTaskProgress,
     abort_with_message,
+    get_config,
     get_db_handle,
     get_tree_from_jwt,
 )
@@ -328,10 +329,7 @@ def preload_event_backlinks(
     if dbapi is None:
         return None
     treeid = getattr(dbapi, "treeid", None)
-    if (
-        treeid is None
-        and type(db_handle).__name__ not in SINGLE_TREE_DBAPI_CLASS_NAMES
-    ):
+    if treeid is None and type(db_handle).__name__ not in SINGLE_TREE_DBAPI_CLASS_NAMES:
         return None
     # obj_class filter matches find_backlink_handles(include_classes=[...])'s
     # scope in get_event_participants_for_handle(): only Person/Family carry
@@ -2276,7 +2274,7 @@ def dry_run_import(
 
 def app_has_semantic_search() -> bool:
     """Indicate whether the app supports semantic search."""
-    return bool(current_app.config.get("VECTOR_EMBEDDING_MODEL"))
+    return bool(get_config("VECTOR_EMBEDDING_MODEL"))
 
 
 def normalize_etag(etag: str | None) -> str | None:

@@ -80,6 +80,75 @@ class TestTransactionResource(unittest.TestCase):
     def tearDownClass(cls):
         cls.dbman.remove_database(cls.name)
 
+    def test_simplified_blog_transaction_and_conflict(self):
+        headers = get_headers(self.client, "editor", "123")
+        created = self.client.post(
+            "/api/sources/",
+            json={
+                "title": "Original",
+                "attribute_list": [{"type": "Blog author", "value": "writer"}],
+            },
+            headers=headers,
+        )
+        source_handle = created.json[0]["new"]["handle"]
+        source = self.client.get(f"/api/sources/{source_handle}", headers=headers).json
+        note_handle = make_handle()
+        note = {
+            "_class": "Note",
+            "handle": note_handle,
+            "type": "Markdown",
+            "text": {"string": "Body"},
+        }
+        updated = {**source, "title": "Updated", "note_list": [note_handle]}
+        changes = [
+            {
+                "type": "add",
+                "_class": "Note",
+                "handle": note_handle,
+                "old": None,
+                "new": note,
+            },
+            {
+                "type": "update",
+                "_class": "Source",
+                "handle": source_handle,
+                "old": source,
+                "new": updated,
+            },
+        ]
+        response = self.client.post(
+            "/api/transactions/?simplified=1", json=changes, headers=headers
+        )
+        self.assertEqual(response.status_code, 200, response.json)
+        saved_note = self.client.get(f"/api/notes/{note_handle}", headers=headers).json
+        self.assertTrue(saved_note["gramps_id"])
+        self.assertEqual(saved_note["type"], "Markdown")
+        self.assertEqual(
+            self.client.get(f"/api/sources/{source_handle}", headers=headers).json[
+                "title"
+            ],
+            "Updated",
+        )
+        changes[0] = {
+            "type": "update",
+            "_class": "Note",
+            "handle": note_handle,
+            "old": saved_note,
+            "new": {**saved_note, "text": {"string": "Should roll back"}},
+        }
+        response = self.client.post(
+            "/api/transactions/?simplified=1", json=changes, headers=headers
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            self.client.get(f"/api/notes/{note_handle}", headers=headers).json["text"][
+                "string"
+            ],
+            "Body",
+        )
+        self.client.delete(f"/api/sources/{source_handle}", headers=headers)
+        self.client.delete(f"/api/notes/{note_handle}", headers=headers)
+
     def test_transaction_add_update_delete(self):
         """Add, update, and delete a single note."""
         handle = make_handle()

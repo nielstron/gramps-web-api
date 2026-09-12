@@ -129,6 +129,7 @@ def create_agent(
     model_name: str,
     base_url: str | None = None,
     system_prompt_override: str | None = None,
+    api_key: str | None = None,
 ) -> Agent[AgentDeps, str]:
     """Create a Pydantic AI agent with the specified model.
 
@@ -140,6 +141,7 @@ def create_agent(
             compatible model name.
         base_url: Optional base URL for the OpenAI-compatible API (ignored if
             model_name contains a provider prefix)
+        api_key: API key for an OpenAI-compatible provider.
         system_prompt_override: Optional override for the system prompt
 
     Returns:
@@ -147,13 +149,20 @@ def create_agent(
     """
     # If model name has a provider prefix (e.g., "mistral:model-name"),
     # let Pydantic AI handle provider detection automatically
-    if ":" in model_name:
+    if ":" in model_name and not base_url and not model_name.startswith("openai:"):
         model: str | OpenAIChatModel = model_name
     else:
         # Otherwise, use OpenAI-compatible provider with optional base_url
-        provider = OpenAIProvider(base_url=base_url)
+        provider = OpenAIProvider(
+            base_url=base_url,
+            api_key=(
+                api_key
+                if api_key is not None
+                else ("not-required" if base_url else None)
+            ),
+        )
         model = OpenAIChatModel(
-            model_name,
+            model_name.removeprefix("openai:"),
             provider=provider,
         )
 

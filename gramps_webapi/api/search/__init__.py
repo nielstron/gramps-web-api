@@ -24,7 +24,7 @@ from urllib.parse import urlparse
 
 from flask import current_app
 
-from .indexer import SearchIndexer, SemanticSearchIndexer, SearchIndexerBase
+from .indexer import SearchIndexer, SearchIndexerBase, SemanticSearchIndexer
 
 
 def _get_search_index_db_url() -> str:
@@ -69,10 +69,9 @@ def get_semantic_search_indexer(
     which will rebuild the index from scratch).
     """
     db_url = _get_search_index_db_url()
-    embedding_function = current_app.config.get("_EMBEDDING_FUNCTION")
-    if not embedding_function:
-        raise ValueError("VECTOR_EMBEDDING_MODEL option not set")
-    model_name = current_app.config.get("VECTOR_EMBEDDING_MODEL") or None
+    from .embeddings import get_embedding_function
+
+    embedding_function, model_name = get_embedding_function()
     return SemanticSearchIndexer(
         db_url=db_url,
         tree=tree,
