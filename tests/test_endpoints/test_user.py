@@ -44,6 +44,7 @@ from gramps_webapi.auth import (
     get_user_details,
     get_user_oidc_accounts,
     modify_user,
+    set_tree_config,
     set_user_settings,
     user_db,
 )
@@ -434,6 +435,34 @@ class TestUser(unittest.TestCase):
             "https://example.com/stammbaum/api/users/-/invite/?jwt=test-token" in plain
         )
         assert "7 days" in plain
+
+    def test_invitation_email_uses_destination_tree_customization(self):
+        self.app.config["BASE_URL"] = "https://example.com/stammbaum/"
+        set_tree_config(
+            self.tree,
+            {
+                "email.invitationSubject": "Join {tree_name}",
+                "email.invitationMessage": "Welcome to {tree_name}!",
+            },
+        )
+        with patch("gramps_webapi.api.util.smtplib.SMTP_SSL") as smtp:
+            send_email_invitation(
+                email="invite@example.com", token="test-token", tree_id=self.tree
+            )
+        message = smtp.return_value.send_message.call_args.args[0]
+        assert message["Subject"] == "Join Test Web API"
+        assert (
+            "Welcome to Test Web API!"
+            in message.get_body(preferencelist=("plain",)).get_content()
+        )
+        with patch("gramps_webapi.api.util.smtplib.SMTP_SSL") as smtp:
+            send_email_invitation(
+                email="invite@example.com", token="test-token", tree_id=self.tree2
+            )
+        assert (
+            smtp.return_value.send_message.call_args.args[0]["Subject"]
+            == "You are invited to Test Web API 2"
+        )
 
     def test_user_settings_are_private_to_the_authenticated_user(self):
         user_token = self.client.post(

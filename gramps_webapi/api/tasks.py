@@ -50,6 +50,7 @@ from .emails import (
     email_invitation,
     email_new_user,
     email_reset_pw,
+    invitation_text,
 )
 from .export import prepare_options, run_export
 from .media import get_media_handler
@@ -166,17 +167,25 @@ def clip_progress(x: float) -> float:
 
 
 @shared_task()
-def send_email_invitation(email: str, token: str):
+def send_email_invitation(email: str, token: str, tree_id: str | None = None):
     """Send an owner-issued invitation."""
+    from ..auth import get_tree_config
+    from .util import get_db_manager
+
+    config = get_tree_config(tree_id) if tree_id else {}
+    tree_name = (
+        (config.get("frontend.appTitle") or get_db_manager(tree_id).name)
+        if tree_id
+        else "Gramps Web"
+    )
+    base_url = get_config("BASE_URL").rstrip("/")
     body, body_html = email_invitation(
-        base_url=get_config("BASE_URL").rstrip("/"), token=token
+        base_url=base_url, token=token, tree_name=tree_name, config=config
     )
-    send_email(
-        subject=_("You are invited to Gramps Web"),
-        body=body,
-        body_html=body_html,
-        to=[email],
+    subject, _message = invitation_text(
+        tree_name, f"{base_url}/api/users/-/invite/?jwt={token}", config
     )
+    send_email(subject=subject, body=body, body_html=body_html, to=[email])
 
 
 @shared_task()

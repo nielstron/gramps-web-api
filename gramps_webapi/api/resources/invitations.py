@@ -70,7 +70,12 @@ def _send_invitation(invitation):
         },
         expires_delta=timedelta(days=7),
     )
-    run_task(send_email_invitation, email=invitation.email, token=token)
+    run_task(
+        send_email_invitation,
+        email=invitation.email,
+        token=token,
+        tree_id=invitation.tree,
+    )
 
 
 class InvitationArgs(Schema):

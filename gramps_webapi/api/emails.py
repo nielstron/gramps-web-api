@@ -19,6 +19,7 @@
 
 """Texts for e-mails."""
 
+import re
 from gettext import gettext as _
 from html import escape
 
@@ -62,21 +63,38 @@ body {
 """
 
 
-def email_invitation(base_url: str, token: str):
-    """Invitation email with a link to choose account details."""
-    url = f"{base_url}/api/users/-/invite/?jwt={token}"
-    header = _("You are invited to Gramps Web")
-    description = _(
-        "A tree owner has invited you to join. Choose your username, full name, "
-        "and password using the link below. This invitation expires in 7 days."
+def invitation_text(tree_name: str, url: str, config: dict):
+    """Substitute only supported placeholders; templates are plain text."""
+    values = {"tree_name": tree_name, "invite_url": url}
+
+    def expand(template):
+        return re.sub(
+            r"\{(tree_name|invite_url)\}", lambda match: values[match[1]], template
+        )
+
+    subject = config.get("email.invitationSubject") or _(
+        "You are invited to {tree_name}"
     )
+    message = config.get("email.invitationMessage") or _(
+        "You have been invited to join {tree_name}. Choose your username, full name, "
+        "and password using the link below."
+    )
+    return " ".join(expand(subject).splitlines()), expand(message)
+
+
+def email_invitation(base_url: str, token: str, tree_name="Gramps Web", config=None):
+    """Invitation email with per-tree text and an always-present setup link."""
+    url = f"{base_url}/api/users/-/invite/?jwt={token}"
+    header, description = invitation_text(tree_name, url, config or {})
+    expiry = _("This invitation expires in 7 days.")
     action = _("Set up your account")
-    body = f"{header}\n\n{description}\n\n{url}\n"
+    body = f"{header}\n\n{description}\n\n{expiry}\n\n{url}\n"
+    description_html = escape(description).replace("\n", "<br>")
     body_html = email_htmltemplate(
-        header,
+        escape(header),
         (
             f'<div class="header">{escape(header)}</div>'
-            f'<div class="content"><p>{escape(description)}</p>'
+            f'<div class="content"><p>{description_html}</p><p>{escape(expiry)}</p>'
             f'<a class="button" href="{escape(url, quote=True)}">{escape(action)}</a></div>'
         ),
     )
