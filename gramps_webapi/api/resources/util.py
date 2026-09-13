@@ -118,6 +118,37 @@ def get_place_by_handle(db_handle: DbReadBase, handle: Handle) -> Union[Place, d
         return {}
 
 
+def sort_family_children(db_handle: DbReadBase, family: Family) -> None:
+    """Derive child order from births (baptism fallback), unknown dates last.
+
+    Sort the references themselves before profiles/extended data are generated
+    so all parallel lists agree. Stable ties make no claim about twins or
+    uncertain relative chronology. Never modify a date to determine order.
+    """
+
+    def birth_key(ref):
+        try:
+            person = db_handle.get_person_from_handle(ref.ref)
+            event = get_birth_or_fallback(db_handle, person) if person else None
+        except HandleError:
+            event = None  # Leave dangling references visible to the checker.
+        date = event.get_date_object() if event else None
+        value = date.get_sort_value() if date and not date.is_empty() else 0
+        return (not bool(value), value)
+
+    family.set_child_ref_list(sorted(family.get_child_ref_list(), key=birth_key))
+
+
+def sort_parent_family_children(db_handle, person, trans):
+    """Refresh persisted order when a child's birth reference/date changes."""
+    for handle in person.get_parent_family_handle_list():
+        family = db_handle.get_family_from_handle(handle)
+        old_order = [ref.ref for ref in family.get_child_ref_list()]
+        sort_family_children(db_handle, family)
+        if old_order != [ref.ref for ref in family.get_child_ref_list()]:
+            db_handle.commit_family(family, trans)
+
+
 def get_family_by_handle(
     db_handle: DbReadBase, handle: Handle, args: Optional[dict] = None
 ) -> Union[Family, dict]:
@@ -129,6 +160,7 @@ def get_family_by_handle(
     except HandleError:
         return {}
     args = args or {}
+    sort_family_children(db_handle, obj)
     if "extend" in args:
         obj.extended = get_extended_attributes(db_handle, obj, args)
         if "all" in args["extend"] or "father" in args["extend"]:
@@ -1003,6 +1035,7 @@ def get_family_profile_for_object(
     precision: int = 3,
 ) -> dict[str, Any]:
     """Get family profile given a Family."""
+    sort_family_children(db_handle, family)
     options = []
     if "all" in args or "ratings" in args:
         options.append("ratings")
@@ -1465,6 +1498,7 @@ def add_object(
             if not obj.handle:
                 obj.handle = create_id()
             add_family_update_refs(db_handle=db_handle, obj=obj, trans=trans)
+            sort_family_children(db_handle, obj)
         return add_method(obj, trans)
     except AttributeError:
         raise ValueError("Database does not support writing.")
@@ -1901,8 +1935,12 @@ def update_object(
             update_family_update_refs(
                 db_handle=db_handle, obj_old=obj_old, obj=obj, trans=trans
             )
+            sort_family_children(db_handle, obj)
         elif obj_class == "person":
             db_handle.set_birth_death_index(obj)
+            result = commit_method(obj, trans)
+            sort_parent_family_children(db_handle, obj, trans)
+            return result
         elif obj_class == "event":
             # When an event type changes (e.g. Death → Birth), the birth_ref_index
             # and death_ref_index on all referring persons must be recomputed.
@@ -1938,6 +1976,13 @@ def update_object(
                         or person.death_ref_index != old_death
                     ):
                         db_handle.commit_person(person, trans)
+            if old_event.date != obj.date or old_type != new_type:
+                for _, person_handle in db_handle.find_backlink_handles(
+                    obj.handle, include_classes=["Person"]
+                ):
+                    person = db_handle.get_person_from_handle(person_handle)
+                    if person:
+                        sort_parent_family_children(db_handle, person, trans)
             return result
         return commit_method(obj, trans)
     except AttributeError as exc:

@@ -472,7 +472,6 @@ class VerifyRunner:
                 self, verify_family, opts["cspace"], opts["estimate_age"]
             ),
             MarriedRelation(self, verify_family),
-            ChildrenOrderIncorrect(self, verify_family, opts["estimate_age"]),
             FamilyHasEventsOfTypeUnknown(self, verify_family),
             FamilyHasEventsInWrongOrder(self, verify_family),
         ]
@@ -1516,7 +1515,7 @@ class LargeChildrenAgeDiff(FamilyRule):
         return (self.c_space, self.est)
 
     def broken(self):
-        dates = _get_child_birth_dates(self.runner, self.obj, self.est)
+        dates = sorted(_get_child_birth_dates(self.runner, self.obj, self.est))
         diffs = [dates[i + 1] - dates[i] for i in range(len(dates) - 1)]
         return bool(diffs and max(diffs) / 365 > self.c_space)
 

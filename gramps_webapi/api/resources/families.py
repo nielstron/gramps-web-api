@@ -38,9 +38,9 @@ from .util import (
     get_extended_attributes,
     get_family_profile_for_object,
     get_person_by_handle,
+    sort_family_children,
 )
 from gramps_webapi.types import ResponseReturnValue
-
 
 
 class FamilyResourceHelper(GrampsObjectResourceHelper):
@@ -53,6 +53,7 @@ class FamilyResourceHelper(GrampsObjectResourceHelper):
     ) -> Family:
         """Extend family attributes as needed."""
         db_handle = self.db_handle
+        sort_family_children(db_handle, obj)
         if "profile" in args:
             obj.profile = get_family_profile_for_object(
                 db_handle,
