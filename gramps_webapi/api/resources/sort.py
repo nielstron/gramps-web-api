@@ -265,8 +265,11 @@ def sort_objects(
             {"date": sort.by_date_key, "confidence": sort.by_citation_confidence_key}
         )
     elif gramps_class_name == "Source":
+        from ...blog import publication_date
+
         lookup.update(
             {
+                "publication": publication_date,
                 "title": sort.by_source_title_key,
                 "author": sort.by_source_author_key,
                 "pubinfo": sort.by_source_pubinfo_key,

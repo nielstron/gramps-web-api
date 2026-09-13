@@ -80,6 +80,7 @@ from gramps.gen.utils.id import create_id
 from gramps.gen.utils.place import conv_lat_lon
 
 from ...const import DISABLED_IMPORTERS, SEX_FEMALE, SEX_MALE, SEX_OTHER, SEX_UNKNOWN
+from ...blog import ensure_publication_date
 from ...types import FilenameOrPath, Handle, TransactionJson
 from ..media import get_media_handler
 from ..util import (
@@ -1499,6 +1500,8 @@ def add_object(
                 obj.handle = create_id()
             add_family_update_refs(db_handle=db_handle, obj=obj, trans=trans)
             sort_family_children(db_handle, obj)
+        elif obj_class == "source":
+            ensure_publication_date(db_handle, obj)
         return add_method(obj, trans)
     except AttributeError:
         raise ValueError("Database does not support writing.")
@@ -1929,6 +1932,10 @@ def update_object(
         obj.set_gramps_id(obj_old.gramps_id)
     try:
         commit_method = db_handle.method("commit_%s", obj_class)
+        if obj_class == "source":
+            ensure_publication_date(
+                db_handle, obj, db_handle.get_source_from_handle(obj.handle)
+            )
         if obj_class == "family":
             handle_func = db_handle.method("get_%s_from_handle", obj_class)
             obj_old = handle_func(obj.handle)
