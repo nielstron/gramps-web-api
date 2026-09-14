@@ -127,6 +127,9 @@ class MediaFileResource(ProtectedResource):
                 media_handler.upload_file(f, checksum, mime, path=path)
             except ValueError:
                 abort_with_message(HTTPStatus.FORBIDDEN, "File access not allowed")
+            from ..thumbnails import schedule_media_thumbnails
+
+            schedule_media_thumbnails(handle)
             return Response(status=200)
         if args.get("uploadmissing"):
             abort_with_message(
@@ -153,6 +156,9 @@ class MediaFileResource(ProtectedResource):
                 abort_with_message(400, "Error while updating object")
             trans_dict = transaction_to_json(trans)
         update_usage_media()
+        from ..thumbnails import schedule_media_thumbnails
+
+        schedule_media_thumbnails(handle)
         return Response(
             response=json.dumps(trans_dict), status=200, mimetype="application/json"
         )

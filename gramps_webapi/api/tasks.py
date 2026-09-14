@@ -612,6 +612,13 @@ def import_media_archive(
         result = importer(progress_cb=progress_callback_count(self))
     finally:
         close_db(db_handle)
+    if importer.uploaded_handles:
+        run_task(
+            pregenerate_thumbnails,
+            tree=tree,
+            user_id=user_id,
+            handles=importer.uploaded_handles,
+        )
     return result
 
 
@@ -647,6 +654,33 @@ def check_repair_database(self, tree: str, user_id: str):
         return check_database(db_handle, progress_cb=progress_callback_count(self))
     finally:
         close_db(db_handle)
+
+
+@shared_task(bind=True)
+def pregenerate_thumbnails(self, tree: str, user_id: str, handles=None):
+    """Repair thumbnails for a tree, or generate them for newly uploaded media."""
+    from .thumbnails import generate_media_thumbnails
+
+    db = get_db_outside_request(
+        tree=tree, view_private=True, readonly=True, user_id=user_id
+    )
+    result = {"processed": 0, "generated": 0, "errors": []}
+    progress = progress_callback_count(self)
+    try:
+        targets = list(db.get_media_handles()) if handles is None else handles
+        for index, handle in enumerate(targets):
+            try:
+                result["generated"] += generate_media_thumbnails(db, tree, handle)
+            except Exception as exc:
+                logging.getLogger(__name__).exception(
+                    "Thumbnail generation failed for %s", handle
+                )
+                result["errors"].append({"handle": handle, "error": str(exc)})
+            result["processed"] += 1
+            progress(current=index + 1, total=len(targets))
+    finally:
+        close_db(db)
+    return result
 
 
 @shared_task()

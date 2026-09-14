@@ -58,6 +58,7 @@ class MediaImporter:
         self.delete = delete
         self.media_handler = get_media_handler(self.db_handle, tree=self.tree)
         self.objects: List[Media] = self._get_objects()
+        self.uploaded_handles: List[str] = []
 
     def _get_objects(self) -> List[Media]:
         """Get a list of all media objects in the database."""
@@ -195,6 +196,7 @@ class MediaImporter:
                             obj_details["mime"],
                             path=obj_details["media_path"],
                         )
+                        self.uploaded_handles.append(obj_details["handle"])
                     except Exception:
                         num_failures += 1
 

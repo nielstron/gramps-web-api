@@ -20,15 +20,40 @@
 """Tests for PILLOW_MAX_IMAGE_PIXELS configuration and image handling"""
 
 import io
+import base64
+from pathlib import Path
 import os
 import pytest
 from gramps_webapi.app import create_app
 from gramps_webapi.api.image import ThumbnailHandler
 from gramps_webapi.const import MIME_PDF
 from PIL import Image
+from PIL import ImageCms
+from gramps_webapi.api.image import save_image_buffer
 from werkzeug.exceptions import HTTPException
 
 from .test_endpoints.test_upload import get_image
+
+
+def test_grayscale_icc_matches_avif_pixel_space():
+    """A grayscale source profile must not be embedded in an RGB AVIF."""
+    image = Image.new("L", (32, 32), 128)
+    image.info["icc_profile"] = base64.b64decode(
+        (Path(__file__).parent / "data/grayscale-srgb-icc.base64").read_text()
+    )
+    output = Image.open(save_image_buffer(image))
+    output.load()
+    profile = ImageCms.ImageCmsProfile(io.BytesIO(output.info["icc_profile"]))
+    assert output.mode == "RGB"
+    assert profile.profile.xcolor_space.strip() == "RGB"
+
+
+@pytest.mark.parametrize("mode", ["L", "RGB", "RGBA"])
+def test_avif_unprofiled_modes(mode):
+    image = Image.new(mode, (16, 16))
+    output = Image.open(save_image_buffer(image))
+    output.load()
+    assert output.mode == ("RGBA" if mode == "RGBA" else "RGB")
 
 
 def make_two_page_pdf(

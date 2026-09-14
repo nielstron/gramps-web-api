@@ -21,6 +21,8 @@
 
 import os
 import unittest
+from io import BytesIO
+from PIL import Image
 from unittest.mock import patch
 
 from gramps.cli.clidbman import CLIDbManager
@@ -65,6 +67,63 @@ class TestRepair(unittest.TestCase):
         assert rv.status_code == 201
         assert rv.json["num_errors"] == 0
         assert rv.json["message"] == ""
+
+    def test_thumbnail_repair_and_upload_pregeneration(self):
+        """Uploaded images and the repair job populate the actual endpoint cache."""
+        data = BytesIO()
+        Image.new("RGB", (50, 80), "red").save(data, format="PNG")
+        with patch("gramps_webapi.api.thumbnails.THUMBNAIL_SIZES", (40,)):
+            rv = self.client.post(
+                "/api/media/",
+                data=data.getvalue(),
+                content_type="image/png",
+                headers=self.headers,
+            )
+            assert rv.status_code == 201
+            handle = rv.json[0]["new"]["handle"]
+            path = f"/api/media/{handle}/thumbnail/40?square=false&thumbnail_version=2"
+            with patch(
+                "gramps_webapi.api.file.LocalFileHandler.send_thumbnail",
+                side_effect=AssertionError("cache miss"),
+            ):
+                cached = self.client.get(path, headers=self.headers)
+                assert cached.status_code == 200
+                assert Image.open(BytesIO(cached.data)).size == (25, 40)
+            repaired = self.client.post(
+                "/api/trees/-/repair/thumbnails", headers=self.headers
+            )
+            assert repaired.status_code == 201
+            assert repaired.json == {"processed": 1, "generated": 2, "errors": []}
+            # Replacing the file must generate thumbnails under its new checksum.
+            data = BytesIO()
+            Image.new("RGB", (80, 50), "blue").save(data, format="PNG")
+            rv = self.client.put(
+                f"/api/media/{handle}/file",
+                data=data.getvalue(),
+                content_type="image/png",
+                headers=self.headers,
+            )
+            assert rv.status_code == 200
+            with patch(
+                "gramps_webapi.api.file.LocalFileHandler.send_thumbnail",
+                side_effect=AssertionError("cache miss"),
+            ):
+                cached = self.client.get(path, headers=self.headers)
+                assert Image.open(BytesIO(cached.data)).size == (40, 25)
+        self.client.delete(f"/api/media/{handle}", headers=self.headers)
+
+    def test_thumbnail_repair_permissions(self):
+        rv = self.client.post(
+            "/api/token/", json={"username": "user", "password": "123"}
+        )
+        headers = {"Authorization": "Bearer " + rv.json["access_token"]}
+        assert (
+            self.client.post(
+                "/api/trees/-/repair/thumbnails", headers=headers
+            ).status_code
+            == 403
+        )
+        assert self.client.post("/api/trees/-/repair/thumbnails").status_code == 401
 
     def test_repair_empty_person(self):
         """Test Repairing an empty person."""

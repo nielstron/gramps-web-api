@@ -48,7 +48,6 @@ from .util import (
 )
 
 
-
 class MediaObjectResourceHelper(GrampsObjectResourceHelper):
     """Media resource helper."""
 
@@ -98,4 +97,7 @@ class MediaObjectsResource(GrampsObjectsProtectedResource, MediaObjectResourceHe
                 abort_with_message(400, "Error while adding object")
             trans_dict = transaction_to_json(trans)
         update_usage_media()
+        from ..thumbnails import schedule_media_thumbnails
+
+        schedule_media_thumbnails(obj.handle)
         return self.response(201, trans_dict, total_items=len(trans_dict))

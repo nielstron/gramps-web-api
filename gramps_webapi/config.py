@@ -64,7 +64,7 @@ class DefaultConfig(object):
     THUMBNAIL_CACHE_CONFIG = {
         "CACHE_TYPE": "FileSystemCache",
         "CACHE_DIR": str(Path.cwd() / "thumbnail_cache"),
-        "CACHE_THRESHOLD": 1000,
+        "CACHE_THRESHOLD": 0,
         "CACHE_DEFAULT_TIMEOUT": 0,
     }
     PERSISTENT_CACHE_CONFIG = {

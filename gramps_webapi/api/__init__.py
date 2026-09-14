@@ -156,6 +156,7 @@ from .resources.transactions import TransactionsResource
 from .resources.translations import TranslationResource, TranslationsResource
 from .resources.trees import (
     CheckTreeResource,
+    RepairThumbnailsResource,
     DisableTreeResource,
     EnableTreeResource,
     TreeConfigResource,
@@ -580,6 +581,9 @@ register_endpt(
     CheckTreeResource, "/trees/<string:tree_id>/repair", "repair_tree", tags=["Trees"]
 )
 register_endpt(
+    RepairThumbnailsResource, "/trees/<string:tree_id>/repair/thumbnails", "repair_thumbnails", tags=["Trees"]
+)
+register_endpt(
     UpgradeTreeSchemaResource,
     "/trees/<string:tree_id>/migrate",
     "migrate_tree",
@@ -951,6 +955,7 @@ def get_media_map_tile(args, handle: str, z: int, x: int, y: int):
         "square": fields.Boolean(load_default=False),
         "jwt": fields.String(required=False),
         "checksum": fields.String(required=False),
+        "thumbnail_version": fields.String(required=False),
     },
     location="query",
 )
@@ -975,6 +980,7 @@ def get_thumbnail(args, handle, size):
         "square": fields.Boolean(load_default=False),
         "jwt": fields.String(required=False),
         "checksum": fields.String(required=False),
+        "thumbnail_version": fields.String(required=False),
     },
     location="query",
 )
@@ -999,6 +1005,7 @@ def get_cropped(args, handle: str, x1: int, y1: int, x2: int, y2: int):
         "square": fields.Boolean(load_default=False),
         "jwt": fields.String(required=False),
         "checksum": fields.String(required=False),
+        "thumbnail_version": fields.String(required=False),
     },
     location="query",
 )

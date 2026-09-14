@@ -51,7 +51,9 @@ def _hash_request_args() -> str:
     # Exclude jwt (auth token) and checksum (frontend cache-busting hint;
     # the authoritative checksum is read from the DB in make_cache_key_thumbnails).
     excluded = {"jwt", "checksum"}
-    query_args = list((k, v) for (k, v) in request.args.items(multi=True) if k not in excluded)
+    query_args = list(
+        (k, v) for (k, v) in request.args.items(multi=True) if k not in excluded
+    )
     args_as_sorted_tuple = tuple(sorted(query_args))
     args_as_bytes = str(args_as_sorted_tuple).encode()
     arg_hash = hashlib.md5(args_as_bytes)
@@ -61,18 +63,23 @@ def _hash_request_args() -> str:
 def make_cache_key_thumbnails(*args, **kwargs):
     """Make a cache key for thumbnails."""
     # Hash query args, excluding jwt and checksum (see _hash_request_args).
-    arg_hash = _hash_request_args()
 
     # Checksum comes from the DB, not the query parameter (which is only a
     # frontend service worker cache-busting hint and is excluded from arg_hash).
     tree = get_tree_from_jwt()
     checksum = g.cached_media.checksum
 
-    dbmgr = get_db_manager(tree)
+    return thumbnail_cache_key(tree, checksum, request.path, request.args)
 
-    cache_key = checksum + request.path + arg_hash + dbmgr.dirname + ":avif"
 
-    return cache_key
+def thumbnail_cache_key(tree, checksum, path, query):
+    """Shared key for authenticated requests and background pre-generation."""
+    ignored = {"jwt", "checksum", "thumbnail_version", "square"}
+    args = [(k, v) for k, v in query.items() if k not in ignored]
+    square = str(query.get("square", "false")).lower() in ("true", "1")
+    args.append(("square", str(square).lower()))
+    arg_hash = hashlib.md5(str(tuple(sorted(args))).encode()).hexdigest()
+    return checksum + path + arg_hash + get_db_manager(tree).dirname + ":avif-icc-v2"
 
 
 def make_cache_key_request(*args, **kwargs):
@@ -204,6 +211,8 @@ def get_cached_native_max_zoom(checksum: str, bounds: list) -> int | None:
     return persistent_cache.get(_native_max_zoom_cache_key(checksum, bounds))
 
 
-def set_cached_native_max_zoom(checksum: str, bounds: list, native_max_zoom: int) -> None:
+def set_cached_native_max_zoom(
+    checksum: str, bounds: list, native_max_zoom: int
+) -> None:
     """Cache the native max zoom for a georeferenced media file."""
     persistent_cache.set(_native_max_zoom_cache_key(checksum, bounds), native_max_zoom)

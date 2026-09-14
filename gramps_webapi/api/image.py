@@ -29,7 +29,7 @@ from importlib.resources import as_file, files
 from pathlib import Path
 from typing import BinaryIO, Callable, Iterator, Union
 
-from PIL import Image, ImageOps, UnidentifiedImageError
+from PIL import Image, ImageCms, ImageOps, UnidentifiedImageError
 from PIL.Image import DecompressionBombError
 from PIL.Image import Image as ImageType
 
@@ -119,6 +119,13 @@ def crop_image(image: ImageType, x1: int, y1: int, x2: int, y2: int) -> ImageTyp
 def save_image_buffer(image: ImageType, fmt="AVIF") -> BinaryIO:
     """Save an image to a binary buffer."""
     buffer = io.BytesIO()
+    if image.mode in ("L", "CMYK") and image.info.get("icc_profile"):
+        image = ImageCms.profileToProfile(
+            image,
+            ImageCms.ImageCmsProfile(io.BytesIO(image.info["icc_profile"])),
+            ImageCms.createProfile("sRGB"),
+            outputMode="RGB",
+        )
     supports_alpha = fmt.upper() in ("AVIF", "PNG", "WEBP")
     if image.mode == "RGBA" and not supports_alpha:
         image = image.convert("RGB")
@@ -306,14 +313,20 @@ def _tile_bounds_lonlat(z: int, x: int, y: int) -> tuple:
     return lon_min, lat_min, lon_max, lat_max
 
 
-def _lat_to_tile_pixel_y(lat: float, z: int, y_tile: int, tile_size: int = 256) -> float:
+def _lat_to_tile_pixel_y(
+    lat: float, z: int, y_tile: int, tile_size: int = 256
+) -> float:
     """Convert latitude to pixel y within a slippy map tile (Web Mercator)."""
     lat_rad = math.radians(lat)
-    y_merc = (1.0 - math.log(math.tan(lat_rad) + 1.0 / math.cos(lat_rad)) / math.pi) / 2.0
+    y_merc = (
+        1.0 - math.log(math.tan(lat_rad) + 1.0 / math.cos(lat_rad)) / math.pi
+    ) / 2.0
     return y_merc * (2**z) * tile_size - y_tile * tile_size
 
 
-def get_native_max_zoom(img_width: int, img_height: int, bounds: list, tile_size: int = 256) -> int:
+def get_native_max_zoom(
+    img_width: int, img_height: int, bounds: list, tile_size: int = 256
+) -> int:
     """Return the highest zoom level at which the image is at or above native resolution.
 
     bounds: [[lat_min, lon_min], [lat_max, lon_max]]
@@ -349,7 +362,9 @@ def get_native_max_zoom(img_width: int, img_height: int, bounds: list, tile_size
 
 def transparent_png_tile(tile_size: int = 256) -> BinaryIO:
     """Return a buffer containing a fully transparent RGBA PNG tile."""
-    return save_image_buffer(Image.new("RGBA", (tile_size, tile_size), (0, 0, 0, 0)), fmt="PNG")
+    return save_image_buffer(
+        Image.new("RGBA", (tile_size, tile_size), (0, 0, 0, 0)), fmt="PNG"
+    )
 
 
 def get_map_tile(
@@ -373,7 +388,9 @@ def get_map_tile(
     img_lat_max, img_lon_max = bounds[1]
     img_width, img_height = image.size
 
-    tile_lon_min, tile_lat_min, tile_lon_max, tile_lat_max = _tile_bounds_lonlat(z, x, y)
+    tile_lon_min, tile_lat_min, tile_lon_max, tile_lat_max = _tile_bounds_lonlat(
+        z, x, y
+    )
 
     ov_lon_min = max(img_lon_min, tile_lon_min)
     ov_lon_max = min(img_lon_max, tile_lon_max)

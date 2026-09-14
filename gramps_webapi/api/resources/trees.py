@@ -59,6 +59,7 @@ from ..auth import has_permissions, require_permissions
 from ..tasks import (
     AsyncResult,
     check_repair_database,
+    pregenerate_thumbnails,
     make_task_response,
     run_task,
     upgrade_database_schema,
@@ -332,13 +333,21 @@ class CheckTreeResource(ProtectedResource):
                 abort_with_message(403, "Not allowed to repair other trees")
         user_id = get_jwt_identity()
         task = run_task(
-            check_repair_database,
+            self.repair_task,
             tree=tree_id,
             user_id=user_id,
         )
         if isinstance(task, AsyncResult):
             return make_task_response(task)
         return jsonify(task), 201
+
+    repair_task = check_repair_database
+
+
+class RepairThumbnailsResource(CheckTreeResource):
+    """Regenerate tree thumbnails using a tracked background repair job."""
+
+    repair_task = pregenerate_thumbnails
 
 
 class UpgradeTreeSchemaResource(ProtectedResource):
