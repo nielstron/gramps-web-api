@@ -79,7 +79,7 @@ def thumbnail_cache_key(tree, checksum, path, query):
     square = str(query.get("square", "false")).lower() in ("true", "1")
     args.append(("square", str(square).lower()))
     arg_hash = hashlib.md5(str(tuple(sorted(args))).encode()).hexdigest()
-    return checksum + path + arg_hash + get_db_manager(tree).dirname + ":avif-icc-v2"
+    return checksum + path + arg_hash + get_db_manager(tree).dirname + ":thumbnail-v3"
 
 
 def make_cache_key_request(*args, **kwargs):

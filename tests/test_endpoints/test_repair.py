@@ -125,6 +125,38 @@ class TestRepair(unittest.TestCase):
         )
         assert self.client.post("/api/trees/-/repair/thumbnails").status_code == 401
 
+    def test_small_media_encodes_native_size_once_per_shape(self):
+        from gramps_webapi.api.image import save_image_buffer
+
+        data = BytesIO()
+        Image.new("RGB", (50, 80), "red").save(data, format="PNG")
+        with (
+            patch("gramps_webapi.api.thumbnails.THUMBNAIL_SIZES", (100, 200, 600)),
+            patch(
+                "gramps_webapi.api.thumbnails.save_image_buffer",
+                wraps=save_image_buffer,
+            ) as encode,
+        ):
+            rv = self.client.post(
+                "/api/media/",
+                data=data.getvalue(),
+                content_type="image/png",
+                headers=self.headers,
+            )
+            assert rv.status_code == 201
+            assert encode.call_count == 2
+            assert [call.args[0].size for call in encode.call_args_list] == [
+                (50, 80),
+                (50, 50),
+            ]
+            handle = rv.json[0]["new"]["handle"]
+            for size in (100, 200, 600):
+                result = self.client.get(
+                    f"/api/media/{handle}/thumbnail/{size}", headers=self.headers
+                )
+                assert Image.open(BytesIO(result.data)).size == (50, 80)
+        self.client.delete(f"/api/media/{handle}", headers=self.headers)
+
     def test_repair_empty_person(self):
         """Test Repairing an empty person."""
         rv = self.client.post("/api/people/", json={}, headers=self.headers)

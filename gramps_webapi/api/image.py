@@ -160,11 +160,11 @@ class ThumbnailHandler:
             self.is_image = False
             self.is_video = False
 
-    def get_image(self) -> ImageType:
+    def get_image(self, pdf_size: int = 2000) -> ImageType:
         """Get a Pillow Image instance."""
         with abort_on_image_errors():
             if self.mime_type == MIME_PDF:
-                return self._get_image_pdf()
+                return self._get_image_pdf(size=pdf_size)
             if self.is_video:
                 return self._get_image_video()
             return open_image(self.stream)
@@ -191,13 +191,14 @@ class ThumbnailHandler:
             img = image_square(img)
         return save_image_buffer(img, fmt=fmt)
 
-    def _get_image_pdf(self) -> ImageType:
+    def _get_image_pdf(self, size: int = 2000) -> ImageType:
         """Get a Pillow Image instance of the PDF's first page."""
         try:
             from pdf2image import convert_from_path
             from pdf2image.exceptions import (
                 PDFPageCountError,
                 PDFSyntaxError,
+                PDFPopplerTimeoutError,
                 PopplerNotInstalledError,
             )
         except ImportError:
@@ -210,10 +211,13 @@ class ThumbnailHandler:
                 last_page=1,
                 use_cropbox=True,
                 dpi=100,
-                size=(2000, 2000),
+                size=min(size, 2000),
+                timeout=60,
             )
         except PopplerNotInstalledError:
             abort_with_message(501, "Poppler is not installed")
+        except PDFPopplerTimeoutError:
+            abort_with_message(422, "PDF first-page rendering timed out")
         except (PDFPageCountError, PDFSyntaxError):
             abort_with_message(422, "File is not a valid PDF file")
         return ims[0]
@@ -262,7 +266,7 @@ class ThumbnailHandler:
 
         If `square` is true, the image is cropped to a centered square.
         """
-        img = self.get_image()
+        img = self.get_image(pdf_size=size)
         img = image_thumbnail(image=img, size=size, square=square)
         return save_image_buffer(img, fmt=fmt)
 
@@ -295,12 +299,20 @@ class LocalFileThumbnailHandler(ThumbnailHandler):
     def __init__(self, path: FilenameOrPath, mime_type: str) -> None:
         """Initialize self given a path and MIME type."""
         self.path = Path(path)
+        if mime_type == MIME_PDF:
+            # Poppler can read the file directly; don't copy an entire register
+            # into Python memory and then back to a temporary file for one page.
+            super().__init__(stream=io.BytesIO(), mime_type=mime_type)
+            return
         try:
             with open(self.path, "rb") as f:
                 stream = io.BytesIO(f.read())
         except FileNotFoundError:
             abort_with_message(404, "Media file not found")
         super().__init__(stream=stream, mime_type=mime_type)
+
+    def _apply_to_path(self, func: Callable, *args, **kwargs):
+        return func(str(self.path), *args, **kwargs)
 
 
 def _tile_bounds_lonlat(z: int, x: int, y: int) -> tuple:

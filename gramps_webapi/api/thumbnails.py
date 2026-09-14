@@ -1,8 +1,11 @@
 """Generate the same cached responses served by thumbnail endpoints."""
 
-from flask import current_app
+from io import BytesIO
+from flask import current_app, send_file
+from PIL import ImageOps
 from .cache import thumbnail_cache, thumbnail_cache_key
 from .media import get_media_handler
+from .image import image_thumbnail, save_image_buffer
 
 # Common frontend sizes, including high-DPI variants. Custom crops stay on demand.
 THUMBNAIL_SIZES = (
@@ -17,10 +20,6 @@ THUMBNAIL_SIZES = (
     400,
     450,
     600,
-    800,
-    900,
-    1200,
-    2000,
 )
 
 
@@ -31,6 +30,8 @@ def generate_media_thumbnails(db, tree, handle):
     ):
         return 0
     handler = get_media_handler(db, tree).get_file_handler(handle, db_handle=db)
+    source = ImageOps.exif_transpose(handler.get_thumbnail_image(max(THUMBNAIL_SIZES)))
+    encoded = {}
     count = 0
     for size in THUMBNAIL_SIZES:
         path = f"/api/media/{handle}/thumbnail/{size}"
@@ -39,7 +40,14 @@ def generate_media_thumbnails(db, tree, handle):
             key = thumbnail_cache_key(tree, media.checksum, path, query)
             # Repair overwrites cached responses as well as filling missing ones.
             with current_app.test_request_context(path, query_string=query):
-                response = handler.send_thumbnail(size=size, square=square)
+                # Larger requests share the native-size encoding, never upscale.
+                bound = min(source.size) if square else max(source.size)
+                variant = (min(size, bound), square)
+                if variant not in encoded:
+                    encoded[variant] = save_image_buffer(
+                        image_thumbnail(source.copy(), size, square)
+                    ).getvalue()
+                response = send_file(BytesIO(encoded[variant]), mimetype="image/avif")
                 response.direct_passthrough = False
                 response.get_data()  # Materialize before closing the file wrapper.
                 thumbnail_cache.set(key, response)

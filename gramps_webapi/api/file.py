@@ -39,6 +39,7 @@ from ..types import FilenameOrPath
 from .cache import get_cached_native_max_zoom, set_cached_native_max_zoom
 from .image import (
     LocalFileThumbnailHandler,
+    ThumbnailHandler,
     abort_on_image_errors,
     detect_faces,
     get_map_tile,
@@ -61,7 +62,10 @@ def _get_map_bounds(media) -> list | None:
                 (lat_min, lon_min), (lat_max, lon_max) = bounds
                 if lat_min >= lat_max or lon_min >= lon_max:
                     return None
-                return [[float(lat_min), float(lon_min)], [float(lat_max), float(lon_max)]]
+                return [
+                    [float(lat_min), float(lon_min)],
+                    [float(lat_max), float(lon_max)],
+                ]
             except (TypeError, ValueError):
                 return None
     return None
@@ -111,6 +115,12 @@ class FileHandler:
         """Send thumbnail of image."""
         raise NotImplementedError
 
+    def get_thumbnail_image(self, size=2000):
+        """Decode once for a batch of thumbnails."""
+        self._abort_if_too_large()
+        with self.get_file_object() as stream:
+            return ThumbnailHandler(stream, self.mime).get_image(pdf_size=size)
+
     def send_thumbnail_cropped(
         self, size: int, x1: int, y1: int, x2: int, y2: int, square: bool = False
     ):
@@ -129,7 +139,9 @@ class FileHandler:
             size = self.get_file_size()
         except FileNotFoundError:
             abort_with_message(404, "Media file not found")
-        if size > max_bytes:
+        # A PDF's total size does not measure its first page's rendering cost.
+        # PDF rendering is restricted to page one, bounded pixels and a timeout.
+        if self.mime != "application/pdf" and size > max_bytes:
             abort_with_message(413, "File too large for thumbnailing")
 
     def get_face_regions(self, etag: Optional[str] = None):
@@ -262,6 +274,13 @@ class LocalFileHandler(FileHandler):
         buffer = thumb.get_cropped(x1=x1, y1=y1, x2=x2, y2=y2, square=square)
         return send_file(buffer, mimetype=MIME_AVIF)
 
+    def get_thumbnail_image(self, size=2000):
+        self._check_path()
+        self._abort_if_too_large()
+        return LocalFileThumbnailHandler(self.path_abs, self.mime).get_image(
+            pdf_size=size
+        )
+
     def send_thumbnail(self, size: int, square: bool = False):
         """Send thumbnail of image."""
         try:
@@ -302,13 +321,17 @@ class LocalFileHandler(FileHandler):
             abort_with_message(404, "No map bounds for media object")
         native_max_zoom = get_cached_native_max_zoom(self.checksum, bounds)
         if native_max_zoom is not None and z > native_max_zoom:
-            abort_with_message(404, "Zoom level exceeds native resolution of source image")
+            abort_with_message(
+                404, "Zoom level exceeds native resolution of source image"
+            )
         with abort_on_image_errors(), Image.open(self.path_abs) as img:
             if native_max_zoom is None:
                 native_max_zoom = get_native_max_zoom(img.width, img.height, bounds)
                 set_cached_native_max_zoom(self.checksum, bounds, native_max_zoom)
             if z > native_max_zoom:
-                abort_with_message(404, "Zoom level exceeds native resolution of source image")
+                abort_with_message(
+                    404, "Zoom level exceeds native resolution of source image"
+                )
             buffer = get_map_tile(img, bounds, z, x, y)
         return send_file(buffer, mimetype=MIME_PNG)
 

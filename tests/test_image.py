@@ -98,6 +98,25 @@ def test_pdf_render_size_capped():
     assert img.width <= 2000 and img.height <= 2000
 
 
+def test_pdf_preview_preserves_page_proportions():
+    handler = ThumbnailHandler(make_two_page_pdf(size=(400, 200)), MIME_PDF)
+    img = handler.get_image()
+    assert img.width / img.height == pytest.approx(2, abs=0.01)
+
+
+def test_large_pdf_can_render_first_page():
+    from flask import Flask
+    from gramps_webapi.api.file import FileHandler
+
+    handler = object.__new__(FileHandler)
+    handler.mime = MIME_PDF
+    handler.get_file_size = lambda: 60 * 1024 * 1024
+    app = Flask(__name__)
+    app.config["MAX_THUMBNAIL_FILE_BYTES"] = 50 * 1024 * 1024
+    with app.app_context():
+        handler._abort_if_too_large()
+
+
 def test_unsupported_mime_type_aborts_415():
     """A MIME type with no thumbnailer must abort, not raise ValueError."""
     with pytest.raises(HTTPException) as exc_info:
@@ -155,6 +174,7 @@ def test_abort_if_too_large_returns_413():
     )
 
     handler = object.__new__(_BigFileHandler)
+    handler.mime = "image/jpeg"
     with app.app_context():
         with pytest.raises(HTTPException) as exc_info:
             handler._abort_if_too_large()
