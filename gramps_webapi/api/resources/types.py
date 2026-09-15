@@ -132,7 +132,15 @@ def get_custom_types(db_handle: DbReadBase, datatype: str) -> Optional[List]:
     if datatype == "event_attribute_types":
         result = db_handle.get_event_attribute_types()
     elif datatype == "event_types":
-        result = db_handle.get_event_types()
+        # Gramps remembers custom labels after their last event is deleted or
+        # retyped. Suggest only types that still occur in accessible records.
+        result = sorted(
+            {
+                str(event.get_type())
+                for event in db_handle.iter_events()
+                if event.get_type().is_custom()
+            }
+        )
     elif datatype == "person_attribute_types":
         result = db_handle.get_person_attribute_types()
     elif datatype == "family_attribute_types":
