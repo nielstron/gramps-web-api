@@ -20,6 +20,9 @@
 """Tests for the /api/relations endpoints using example_gramps."""
 
 import unittest
+from unittest.mock import patch
+
+from gramps_webapi.api.people_families_cache import CachePeopleFamiliesProxy
 
 from . import BASE_URL, get_test_client
 from .checks import (
@@ -55,6 +58,25 @@ class TestRelations(unittest.TestCase):
                 "relationship_string": "second great stepgrandaunt",
             },
         )
+
+    def test_get_relations_does_not_preload_the_complete_tree(self):
+        """A single relationship only loads records reached by its traversal."""
+        with (
+            patch.object(
+                CachePeopleFamiliesProxy,
+                "cache_people",
+                side_effect=AssertionError("must not scan all people"),
+            ),
+            patch.object(
+                CachePeopleFamiliesProxy,
+                "cache_families",
+                side_effect=AssertionError("must not scan all families"),
+            ),
+        ):
+            rv = check_success(
+                self, TEST_URL + "9BXKQC1PVLPYFMD6IX/ORFKQC4KLWEGTGR19L"
+            )
+        self.assertEqual(rv["relationship_string"], "second great stepgrandaunt")
 
     def test_get_relations_missing_content(self):
         """Test response for missing content."""

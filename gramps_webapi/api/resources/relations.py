@@ -32,8 +32,8 @@ from gramps_webapi.api.people_families_cache import CachePeopleFamiliesProxy
 from gramps_webapi.api.relation_path import find_connection_path
 
 from ...types import Handle
-from ..cache import request_cache_decorator
 from ..blueprint import api_blueprint
+from ..cache import request_cache_decorator
 from ..util import abort_with_message, get_db_handle, get_locale_for_language
 from . import ProtectedResource
 from .emit import GrampsJSONEncoder
@@ -81,9 +81,6 @@ class RelationResource(ProtectedResource, GrampsJSONEncoder):
             person2 = db_handle.get_person_from_handle(handle2)
         except HandleError:
             abort_with_message(404, f"Person {handle2} not found")
-
-        db_handle.cache_people()
-        db_handle.cache_families()
 
         locale = get_locale_for_language(args["locale"], default=True)
         data = get_one_relationship(

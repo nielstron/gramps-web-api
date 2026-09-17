@@ -22,9 +22,9 @@
 
 from typing import Generator
 
-from gramps.gen.proxy.proxybase import ProxyDbBase
 from gramps.gen.db import DbReadBase
-from gramps.gen.lib import Person, Family
+from gramps.gen.lib import Family, Person
+from gramps.gen.proxy.proxybase import ProxyDbBase
 
 
 class CachePeopleFamiliesProxy(ProxyDbBase):
@@ -46,16 +46,16 @@ class CachePeopleFamiliesProxy(ProxyDbBase):
         self._family_cache = {obj.handle: obj for obj in self.db.iter_families()}
 
     def get_person_from_handle(self, handle: str) -> Person:
-        """Get a person from the cache or the database."""
-        if handle in self._people_cache:
-            return self._people_cache[handle]
-        return self.db.get_person_from_handle(handle)
+        """Get a person from the cache, memoizing an indexed DB lookup."""
+        if handle not in self._people_cache:
+            self._people_cache[handle] = self.db.get_person_from_handle(handle)
+        return self._people_cache[handle]
 
     def get_family_from_handle(self, handle: str) -> Family:
-        """Get a family from the cache or the database."""
-        if handle in self._family_cache:
-            return self._family_cache[handle]
-        return self.db.get_family_from_handle(handle)
+        """Get a family from the cache, memoizing an indexed DB lookup."""
+        if handle not in self._family_cache:
+            self._family_cache[handle] = self.db.get_family_from_handle(handle)
+        return self._family_cache[handle]
 
     def find_backlink_handles(
         self, handle, include_classes=None
