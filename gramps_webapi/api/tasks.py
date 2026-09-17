@@ -48,6 +48,7 @@ from .check import check_database
 from .emails import (
     email_confirm_email,
     email_invitation,
+    email_magic_login,
     email_new_user,
     email_reset_pw,
     invitation_text,
@@ -187,6 +188,19 @@ def send_email_invitation(email: str, token: str, tree_id: str | None = None):
         tree_name, f"{base_url}/api/users/-/invite/?jwt={token}", config
     )
     send_email(subject=subject, body=body, body_html=body_html, to=[email])
+
+
+@shared_task()
+def send_email_magic_login(email: str, token: str):
+    """Send a short-lived, one-time sign-in link."""
+    base_url = get_config("BASE_URL").rstrip("/")
+    body, body_html = email_magic_login(base_url=base_url, token=token)
+    send_email(
+        subject=_("Sign in to Gramps Web"),
+        body=body,
+        body_html=body_html,
+        to=[email],
+    )
 
 
 @shared_task()

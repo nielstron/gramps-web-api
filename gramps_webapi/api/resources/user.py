@@ -74,6 +74,7 @@ from ...auth.const import (
     SCOPE_RESET_PW,
 )
 from ...auth.oidc_helpers import is_oidc_enabled
+from ...auth.passwords import PASSWORD_DISABLED
 from ...const import TREE_MULTI
 from ..auth import has_permissions, require_permissions
 from ..blueprint import api_blueprint
@@ -393,6 +394,7 @@ class UserResource(UserChangeBase):
     @api_blueprint.response(200, Schema())
     def get(self, user_name: str):
         """Get a user's details."""
+        own_user = user_name == "-"
         if user_name == "-":
             # own user
             user_id = get_jwt_identity()
@@ -417,6 +419,8 @@ class UserResource(UserChangeBase):
         if details is None:
             # user does not exist
             abort_with_message(404, "User does not exist")
+        if own_user:
+            details["has_password"] = get_pwhash(user_name) != PASSWORD_DISABLED
 
         # Always include OIDC account information if OIDC is enabled and user has permissions
         if is_oidc_enabled() and has_permissions([PERM_VIEW_OTHER_USER]):
@@ -734,7 +738,8 @@ class UserChangePasswordBodyArgs(Schema):
     """Body arguments for POST /users/<user_name>/password/."""
 
     old_password = fields.Str(
-        required=True,
+        load_default=None,
+        allow_none=True,
         metadata={"description": "The current (old) password."},
     )
     new_password = fields.Str(
@@ -752,7 +757,9 @@ class UserChangePasswordResource(UserChangeBase):
         user_name, _ = self.prepare_edit(user_name)
         if not args["new_password"]:
             abort_with_message(400, "Empty password provided")
-        if not authorized(user_name, args["old_password"]):
+        if get_pwhash(user_name) != PASSWORD_DISABLED and not authorized(
+            user_name, args["old_password"] or ""
+        ):
             abort_with_message(403, "Old password incorrect")
         modify_user(name=user_name, password=args["new_password"])
         return "", 201

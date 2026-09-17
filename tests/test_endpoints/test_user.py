@@ -178,24 +178,47 @@ class TestUser(unittest.TestCase):
         response = self.client.post(
             BASE_URL + "/users/-/invite/",
             headers=invitation_header,
-            json={
-                "name": "invited",
-                "full_name": "Invited Person",
-                "password": "chosen password",
-            },
+            json={"full_name": "Invited Person"},
         )
         assert response.status_code == 201, response.text
         assert response.json["access_token"]
         assert response.json["refresh_token"]
-        details = get_user_details("invited")
+        access_token = response.json["access_token"]
+        details = get_user_details("invited@example.com")
         assert details["email"] == "invited@example.com"
         assert details["full_name"] == "Invited Person"
         assert details["role"] == ROLE_MEMBER
         assert details["tree"] == self.tree
+        own_details = self.client.get(
+            BASE_URL + "/users/-/",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert own_details.json["has_password"] is False
         assert (
             self.client.post(
                 BASE_URL + "/token/",
-                json={"username": "invited", "password": "chosen password"},
+                json={"username": "invited@example.com", "password": "anything"},
+            ).status_code
+            == 403
+        )
+        response = self.client.post(
+            BASE_URL + "/users/-/password/change",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json={"new_password": "chosen password"},
+        )
+        assert response.status_code == 201, response.text
+        own_details = self.client.get(
+            BASE_URL + "/users/-/",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert own_details.json["has_password"] is True
+        assert (
+            self.client.post(
+                BASE_URL + "/token/",
+                json={
+                    "username": "invited@example.com",
+                    "password": "chosen password",
+                },
             ).status_code
             == 200
         )
@@ -203,10 +226,56 @@ class TestUser(unittest.TestCase):
             self.client.post(
                 BASE_URL + "/users/-/invite/",
                 headers=invitation_header,
-                json={"name": "replay", "full_name": "Replay", "password": "password"},
+                json={"full_name": "Replay"},
             ).status_code
             == 409
         )
+
+    def test_magic_login_is_rotated_and_single_use(self):
+        with patch("gramps_webapi.api.resources.magic_login.run_task") as task:
+            response = self.client.post(
+                BASE_URL + "/token/magic/", json={"email": "test@example.com"}
+            )
+        assert response.status_code == 201
+        old_magic_token = task.call_args.kwargs["token"]
+        with patch("gramps_webapi.api.resources.magic_login.run_task") as task:
+            response = self.client.post(
+                BASE_URL + "/token/magic/", json={"email": "test@example.com"}
+            )
+        magic_token = task.call_args.kwargs["token"]
+        assert magic_token != old_magic_token
+        assert (
+            self.client.post(
+                BASE_URL + "/token/magic/consume/", json={"token": old_magic_token}
+            ).status_code
+            == 403
+        )
+        page = self.client.get(
+            BASE_URL + "/token/magic/consume/",
+            query_string={"token": magic_token},
+        )
+        assert page.status_code == 200
+        assert "localStorage.setItem('access_token'" in page.text
+        response = self.client.post(
+            BASE_URL + "/token/magic/consume/", json={"token": magic_token}
+        )
+        assert response.status_code == 200, response.text
+        assert response.json["access_token"]
+        assert response.json["refresh_token"]
+        assert (
+            self.client.post(
+                BASE_URL + "/token/magic/consume/", json={"token": magic_token}
+            ).status_code
+            == 403
+        )
+
+    def test_magic_login_does_not_reveal_unknown_email(self):
+        with patch("gramps_webapi.api.resources.magic_login.run_task") as task:
+            response = self.client.post(
+                BASE_URL + "/token/magic/", json={"email": "missing@example.com"}
+            )
+        assert response.status_code == 201
+        task.assert_not_called()
 
     def _login_header(self, name="owner"):
         response = self.client.post(
@@ -418,9 +487,16 @@ class TestUser(unittest.TestCase):
     def test_invitation_rejects_role_tampering_and_preserves_link_after_name_collision(
         self,
     ):
+        add_user(
+            name="invite@example.com",
+            password="password",
+            email="other@example.com",
+            role=ROLE_MEMBER,
+            tree=self.tree,
+        )
         _, header = self._invite()
         endpoint = BASE_URL + "/users/-/invite/"
-        payload = {"name": "user", "full_name": "New Name", "password": "new password"}
+        payload = {"full_name": "New Name"}
         assert (
             self.client.post(
                 endpoint, headers=header, json={**payload, "role": ROLE_ADMIN}
@@ -430,20 +506,11 @@ class TestUser(unittest.TestCase):
         assert (
             self.client.post(endpoint, headers=header, json=payload).status_code == 409
         )
-        for name in ("-", "_", " ", "bad/name"):
-            assert (
-                self.client.post(
-                    endpoint, headers=header, json={**payload, "name": name}
-                ).status_code
-                == 422
-            )
+        delete_user("invite@example.com")
         assert (
-            self.client.post(
-                endpoint, headers=header, json={**payload, "name": "available"}
-            ).status_code
-            == 201
+            self.client.post(endpoint, headers=header, json=payload).status_code == 201
         )
-        assert get_user_details("available")["role"] == ROLE_MEMBER
+        assert get_user_details("invite@example.com")["role"] == ROLE_MEMBER
 
     def test_invitation_email_contains_prefixed_setup_link(self):
         self.app.config["BASE_URL"] = "https://example.com/stammbaum/"
@@ -783,6 +850,7 @@ class TestUser(unittest.TestCase):
                 "role": ROLE_MEMBER,
                 "full_name": None,
                 "tree": self.tree,
+                "has_password": True,
             },
         )
         # user cannot view others
@@ -957,6 +1025,7 @@ class TestUser(unittest.TestCase):
                 "role": ROLE_MEMBER,
                 "full_name": "My Name",
                 "tree": self.tree,
+                "has_password": True,
             },
         )
         # user cannot change others

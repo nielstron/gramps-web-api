@@ -24,7 +24,7 @@ from ...auth.const import (
     ROLE_ADMIN,
     SCOPE_ACCEPT_INVITATION,
 )
-from ...auth.passwords import hash_password
+from ...auth.passwords import PASSWORD_DISABLED
 from ...const import TREE_MULTI
 from ..auth import has_permissions, require_permissions
 from ..blueprint import api_blueprint
@@ -191,11 +191,9 @@ class UserInvitationResource(ProtectedResource):
 
 
 class AcceptInvitationArgs(Schema):
-    """Recipients choose their own names and password, never email or role."""
+    """Recipients only provide the name displayed for their account."""
 
-    name = fields.String(required=True, validate=validate.Length(min=1, max=255))
     full_name = fields.String(required=True, validate=validate.Length(min=1, max=255))
-    password = fields.String(required=True, validate=validate.Length(min=1))
 
 
 class UserAcceptInvitationResource(LimitedScopeProtectedResource):
@@ -237,14 +235,8 @@ class UserAcceptInvitationResource(LimitedScopeProtectedResource):
     @api_blueprint.arguments(AcceptInvitationArgs, location="json")
     def post(self, args):
         invitation = self._get_invitation()
-        name = args["name"].strip()
+        name = invitation.email
         full_name = args["full_name"].strip()
-        if (
-            not name
-            or name in ("-", "_")
-            or any(ord(c) < 32 or c in "/\\" for c in name)
-        ):
-            abort_with_message(422, "Please choose a valid username")
         if not full_name:
             abort_with_message(422, "Full name cannot be empty")
         if _existing_email(invitation.email, invitation.tree):
@@ -258,7 +250,7 @@ class UserAcceptInvitationResource(LimitedScopeProtectedResource):
             email=invitation.email,
             role=invitation.role,
             tree=invitation.tree,
-            pwhash=hash_password(args["password"]),
+            pwhash=PASSWORD_DISABLED,
         )
         # Consume the current secret and create the account in one transaction.
         consumed = user_db.session.execute(
@@ -280,7 +272,7 @@ class UserAcceptInvitationResource(LimitedScopeProtectedResource):
             user_db.session.rollback()
             if user_db.session.query(User).filter_by(name=name).first():
                 abort_with_message(
-                    409, "This username is already taken; please choose another"
+                    409, "An account with this e-mail address already exists"
                 )
             raise
         tree_id, permissions = get_tree_id_and_permissions(

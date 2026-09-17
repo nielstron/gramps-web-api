@@ -76,8 +76,8 @@ def invitation_text(tree_name: str, url: str, config: dict):
         "You are invited to {tree_name}"
     )
     message = config.get("email.invitationMessage") or _(
-        "You have been invited to join {tree_name}. Choose your username, full name, "
-        "and password using the link below."
+        "You have been invited to join {tree_name}. Enter your name using the link "
+        "below to sign in."
     )
     return " ".join(expand(subject).splitlines()), expand(message)
 
@@ -96,6 +96,25 @@ def email_invitation(base_url: str, token: str, tree_name="Gramps Web", config=N
             f'<div class="header">{escape(header)}</div>'
             f'<div class="content"><p>{description_html}</p><p>{escape(expiry)}</p>'
             f'<a class="button" href="{escape(url, quote=True)}">{escape(action)}</a></div>'
+        ),
+    )
+    return body, body_html
+
+
+def email_magic_login(base_url: str, token: str):
+    """One-time magic sign-in link e-mail."""
+    url = f"{base_url}/api/token/magic/consume/?token={token}"
+    header = _("Sign in to Gramps Web")
+    description = _("Use this one-time link to sign in. It expires in 15 minutes.")
+    ignore = _("If you did not request this link, you can ignore this e-mail.")
+    body = f"{header}\n\n{description}\n\n{url}\n\n{ignore}\n"
+    body_html = email_htmltemplate(
+        escape(header),
+        (
+            f'<div class="header">{escape(header)}</div>'
+            f'<div class="content"><p>{escape(description)}</p>'
+            f'<a class="button" href="{escape(url, quote=True)}">{escape(header)}</a>'
+            f"<p>{escape(ignore)}</p></div>"
         ),
     )
     return body, body_html

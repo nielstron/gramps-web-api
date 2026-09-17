@@ -23,6 +23,8 @@ import hashlib
 import os
 from secrets import compare_digest
 
+PASSWORD_DISABLED = "!"
+
 
 def generate_salt() -> bytes:
     """Generate a random salt."""
@@ -43,6 +45,8 @@ def hash_password(password: str) -> str:
 
 def verify_password(password: str, salt_hash: str) -> bool:
     """Verify a password against a salted hash."""
+    if salt_hash == PASSWORD_DISABLED:
+        return False
     salt = salt_hash[:64].encode("ascii")
     correct_pw_hash = salt_hash[64:]
     computed_pw_hash = hash_password_salt(password, salt).hex()

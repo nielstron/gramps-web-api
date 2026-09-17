@@ -1,6 +1,10 @@
 """Per-tree invitation templates, without delivering mail."""
 
-from gramps_webapi.api.emails import email_invitation, invitation_text
+from gramps_webapi.api.emails import (
+    email_invitation,
+    email_magic_login,
+    invitation_text,
+)
 
 
 def test_default_names_tree_and_keeps_setup_link():
@@ -46,3 +50,11 @@ def test_templates_do_not_leak_between_trees_or_recursively_expand():
         )[1]
         == "Link: URL"
     )
+
+
+def test_magic_login_link_preserves_application_prefix():
+    plain, html = email_magic_login("https://example.com/stammbaum", "secret")
+    url = "https://example.com/stammbaum/api/token/magic/consume/?token=secret"
+    assert url in plain
+    assert url in html
+    assert "15 minutes" in plain

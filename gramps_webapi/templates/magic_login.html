@@ -1,0 +1,36 @@
+{% extends "reset_password_base.html" %}
+{% block title %}Sign in to Gramps Web{% endblock %}
+{% block main %}
+<h1>Sign in to Gramps Web</h1>
+<p id="status">Signing you in…</p>
+<p id="error" class="error" role="alert" hidden></p>
+<script>
+  async function signIn() {
+    const token = new URLSearchParams(window.location.search).get('token');
+    const error = document.getElementById('error');
+    try {
+      if (!token) throw new Error('The sign-in link is incomplete.');
+      const response = await fetch(window.location.pathname, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({token}),
+      });
+      if (!response.ok) {
+        const result = await response.json();
+        throw new Error(result.error?.message || result.message || 'Unable to sign in.');
+      }
+      const result = await response.json();
+      const payload = JSON.parse(atob(result.access_token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
+      localStorage.setItem('access_token', result.access_token);
+      localStorage.setItem('access_token_expires', payload.exp * 1000);
+      localStorage.setItem('refresh_token', result.refresh_token);
+      window.location.replace({{login_url|tojson}});
+    } catch (err) {
+      document.getElementById('status').hidden = true;
+      error.textContent = err.message;
+      error.hidden = false;
+    }
+  }
+  signIn();
+</script>
+{% endblock %}

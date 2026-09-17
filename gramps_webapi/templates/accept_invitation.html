@@ -11,15 +11,9 @@
 <h1>Welcome to Gramps Web</h1>
 <form id="invitation-form">
   <p>Set up your account for <strong>{{email}}</strong>.</p>
-  <label for="username">Username</label>
-  <input id="username" name="username" autocomplete="username" maxlength="255" required>
-  <label for="full-name">Full name</label>
+  <label for="full-name">Your name</label>
   <input id="full-name" name="full-name" autocomplete="name" maxlength="255" required>
-  <label for="password">Password</label>
-  <input id="password" name="password" type="password" autocomplete="new-password" required>
-  <label for="confirm-password">Confirm password</label>
-  <input id="confirm-password" name="confirm-password" type="password" autocomplete="new-password" required>
-  <button id="submit" type="submit">Create account</button>
+  <button id="submit" type="submit">Join and sign in</button>
 </form>
 <p id="error" class="error" role="alert" hidden></p>
 <div id="success" class="success" role="status" hidden>
@@ -33,21 +27,13 @@
   form.addEventListener('submit', async event => {
     event.preventDefault();
     error.hidden = true;
-    const password = document.getElementById('password').value;
-    if (password !== document.getElementById('confirm-password').value) {
-      error.textContent = 'Passwords do not match.';
-      error.hidden = false;
-      return;
-    }
     button.disabled = true;
     try {
       const response = await fetch(window.location.pathname, {
         method: 'POST',
         headers: {'Content-Type': 'application/json', Authorization: `Bearer ${token}`},
         body: JSON.stringify({
-          name: document.getElementById('username').value.trim(),
           full_name: document.getElementById('full-name').value.trim(),
-          password,
         }),
       });
       if (!response.ok) {

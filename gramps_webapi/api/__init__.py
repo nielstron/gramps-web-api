@@ -82,6 +82,7 @@ from .resources.invitations import (
     UserInvitationsResource,
 )
 from .resources.living import LivingDatesResource, LivingResource
+from .resources.magic_login import MagicLoginConsumeResource, MagicLoginResource
 from .resources.media import MediaObjectResource, MediaObjectsResource
 from .resources.merge import (
     MergeCitationResource,
@@ -841,6 +842,13 @@ register_endpt(
     "/users/-/invite/",
     "accept_invitation",
     tags=["Users"],
+)
+register_endpt(MagicLoginResource, "/token/magic/", "magic_login", tags=["Token"])
+register_endpt(
+    MagicLoginConsumeResource,
+    "/token/magic/consume/",
+    "consume_magic_login",
+    tags=["Token"],
 )
 register_endpt(UsersResource, "/users/", "users", tags=["Users"])
 register_endpt(UserResource, "/users/<string:user_name>/", "user", tags=["Users"])
