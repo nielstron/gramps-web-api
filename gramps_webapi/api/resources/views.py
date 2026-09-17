@@ -46,7 +46,7 @@ from .util import (
 class RelationshipGraphArgs(Schema):
     """Relationship graph query arguments."""
 
-    degree = fields.Int(load_default=3, validate=validate.Range(min=0, max=12))
+    degree = fields.Int(load_default=10, validate=validate.Range(min=0, max=12))
     direction = fields.Str(
         load_default="any",
         validate=validate.OneOf(["any", "ancestors", "descendants"]),

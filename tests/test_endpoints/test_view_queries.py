@@ -2,6 +2,8 @@
 
 import unittest
 
+from gramps_webapi.api.resources.views import RelationshipGraphArgs
+
 from . import BASE_URL, get_test_client
 from .checks import check_requires_token, check_success
 
@@ -19,6 +21,9 @@ class TestRelationshipGraphView(unittest.TestCase):
 
     def test_requires_token(self):
         check_requires_token(self, f"{VIEWS_URL}relationship-graph/{PERSON1}")
+
+    def test_defaults_to_ten_degrees(self):
+        self.assertEqual(RelationshipGraphArgs().load({})["degree"], 10)
 
     def test_returns_people_with_graph_projection(self):
         result = check_success(
