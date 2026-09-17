@@ -54,8 +54,10 @@ from gramps_object_query_language.query import (
     REPOSITORY,
     SOURCE,
     TAG,
+    And,
     ColumnRef,
     Dialect,
+    In,
     ObjectTypeSpec,
     OrderBy,
     Query,
@@ -90,6 +92,13 @@ from .db_backend import (
     is_sqlite,
 )
 from .schemas import ObjectQueryResponseSchema
+from .relationship_scope import (
+    RelationshipScope,
+    RelationshipScopePredicate,
+    compile_relationship_scope,
+    prefix_relationship_scope,
+    relationship_scope_relation,
+)
 
 
 class QueryExistsPayloadArgs(Schema):
@@ -237,7 +246,9 @@ class QueryWhereConditionArgs(Schema):
                 f"at most one of 'and'/'or'/'not'/'exists' is allowed per "
                 f"condition, got: {sorted(combinators)}"
             )
-        is_leaf_ish = any(key in data for key in ("column", "op", "value", "value_column"))
+        is_leaf_ish = any(
+            key in data for key in ("column", "op", "value", "value_column")
+        )
         if combinators and is_leaf_ish:
             raise ValidationError(
                 "a condition can't combine 'and'/'or'/'not'/'exists' with "
@@ -272,6 +283,33 @@ class QueryOrderByArgs(Schema):
         load_default="asc",
         validate=validate.OneOf(["asc", "desc"]),
         metadata={"description": "Sort direction: 'asc' or 'desc'."},
+    )
+
+
+class RelationshipScopeArgs(Schema):
+    """A reusable bounded person-family graph scope."""
+
+    kind = wf.Str(
+        load_default="relationship",
+        validate=validate.Equal("relationship"),
+        metadata={"description": "Scope kind; currently always 'relationship'."},
+    )
+    person = wf.Str(
+        required=True,
+        validate=validate.Length(min=1),
+        metadata={"description": "Root person's handle or Gramps ID."},
+    )
+    max_degree = wf.Int(
+        load_default=4,
+        validate=validate.Range(min=0, max=100),
+        metadata={"description": "Maximum family-relationship distance from the root."},
+    )
+    direction = wf.Str(
+        load_default="any",
+        validate=validate.OneOf(["any", "ancestors", "descendants"]),
+        metadata={
+            "description": "Traverse every relation, only parents, or only children."
+        },
     )
 
 
@@ -361,6 +399,26 @@ class QueryBodyArgs(Schema):
             "in the `X-Total-Count` response header (the same convention used "
             "elsewhere in this API). Costs a second query, so it's opt-in."
         },
+    )
+    scope = wf.Nested(
+        RelationshipScopeArgs,
+        required=False,
+        metadata={
+            "description": "Optional recursive relationship scope. Person queries "
+            "return scoped people, family queries families containing scoped "
+            "people, and event queries events involving those people or families."
+        },
+    )
+
+
+def _relationship_scope(args: dict) -> Optional[RelationshipScope]:
+    raw = args.get("scope")
+    if raw is None:
+        return None
+    return RelationshipScope(
+        person=raw["person"],
+        max_degree=raw["max_degree"],
+        direction=raw["direction"],
     )
 
 
@@ -539,9 +597,7 @@ def _validate_leaf_condition(condition: dict) -> None:
     has_value = "value" in condition
     has_value_column = "value_column" in condition
     if has_value == has_value_column:
-        abort_with_message(
-            422, "exactly one of 'value'/'value_column' is required"
-        )
+        abort_with_message(422, "exactly one of 'value'/'value_column' is required")
     op = condition["op"]
     if has_value_column and op in ("in", "like", "regex"):
         abort_with_message(422, f"'value_column' is not supported for op {op!r}")
@@ -906,7 +962,12 @@ class ObjectQueryResource(ProtectedResource):
         after = None
         if args.get("after"):
             after = _resolve_after(
-                basedb, self.spec, order_by, args["after"], treeid, _resolve_dialect(basedb)
+                basedb,
+                self.spec,
+                order_by,
+                args["after"],
+                treeid,
+                _resolve_dialect(basedb),
             )
 
         # `default=False`, deliberately: falling back to the system locale
@@ -917,6 +978,7 @@ class ObjectQueryResource(ProtectedResource):
         collation = _resolve_collation(basedb, locale) if locale is not None else None
 
         dialect = _resolve_dialect(basedb)
+        relationship_scope = _relationship_scope(args)
         try:
             parsed_select = (
                 [_parse_select_entry(item, self.spec) for item in args["select"]]
@@ -935,9 +997,17 @@ class ObjectQueryResource(ProtectedResource):
             # exact multiple of `limit` doesn't need a wasted follow-up
             # request just to learn there's no next page; the extra row is
             # trimmed back off below and never reaches the response.
+            where = _build_where(_resolve_where_conditions(args, self.spec), self.spec)
+            if relationship_scope is not None:
+                scope_predicate = RelationshipScopePredicate()
+                where = (
+                    And(where, scope_predicate)
+                    if where is not None
+                    else scope_predicate
+                )
             query = Query(
                 select=fetch_refs,
-                where=_build_where(_resolve_where_conditions(args, self.spec), self.spec),
+                where=where,
                 order_by=order_by,
                 limit=args["limit"] + 1,
                 after=after,
@@ -954,6 +1024,24 @@ class ObjectQueryResource(ProtectedResource):
                 if args["count"]
                 else (None, None)
             )
+            if relationship_scope is not None:
+                sql, params = prefix_relationship_scope(
+                    sql,
+                    params,
+                    relationship_scope,
+                    dialect=dialect,
+                    treeid=treeid,
+                    include_private=True,
+                )
+                if count_sql is not None and count_params is not None:
+                    count_sql, count_params = prefix_relationship_scope(
+                        count_sql,
+                        count_params,
+                        relationship_scope,
+                        dialect=dialect,
+                        treeid=treeid,
+                        include_private=True,
+                    )
         except QueryError as error:
             abort_with_message(422, str(error))
 
@@ -975,9 +1063,7 @@ class ObjectQueryResource(ProtectedResource):
         }
         items = [
             {
-                key: (
-                    _normalize_json_value(val) if key in decoded_keys else val
-                )
+                key: (_normalize_json_value(val) if key in decoded_keys else val)
                 for key, val in zip(fetch_keys, row)
                 if key in requested_keys
             }
@@ -1039,6 +1125,35 @@ class ObjectQueryResource(ProtectedResource):
             fetch_refs = fetch_refs + ["handle"]
             fetch_keys = fetch_keys + ["handle"]
         requested_keys = {key for _, key in parsed_select}
+
+        relationship_scope = _relationship_scope(args)
+        if relationship_scope is not None:
+            basedb = db.basedb
+            try:
+                treeid = _resolve_treeid(basedb)
+                dialect = _resolve_dialect(basedb)
+                cte, scope_params = compile_relationship_scope(
+                    relationship_scope,
+                    dialect=dialect,
+                    treeid=treeid,
+                    include_private=False,
+                )
+            except QueryError as error:
+                abort_with_message(422, str(error))
+            try:
+                scope_relation = relationship_scope_relation(self.spec.table)
+            except QueryError as error:
+                abort_with_message(422, str(error))
+            basedb.dbapi.execute(
+                f"{cte}\nSELECT handle FROM relationship_scope_{scope_relation}",
+                scope_params,
+            )
+            scope_handles = [row[0] for row in basedb.dbapi.fetchall()]
+            if not scope_handles:
+                headers = {"X-Total-Count": "0"} if args["count"] else {}
+                return {"items": [], "next_after": None}, 200, headers
+            scope_where = In("handle", scope_handles)
+            where = And(where, scope_where) if where is not None else scope_where
 
         after = None
         if args.get("after"):

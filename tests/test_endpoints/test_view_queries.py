@@ -1,0 +1,63 @@
+"""Tests for SQL-backed frontend view resources."""
+
+import unittest
+
+from . import BASE_URL, get_test_client
+from .checks import check_requires_token, check_success
+
+VIEWS_URL = BASE_URL + "/views/"
+PERSON1 = "cc8205d87831c772e87"
+PERSON2 = "cc8205d872f532ab14e"
+
+
+class TestRelationshipGraphView(unittest.TestCase):
+    """The relationship graph is delivered as one compact response."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.client = get_test_client()
+
+    def test_requires_token(self):
+        check_requires_token(self, f"{VIEWS_URL}relationship-graph/{PERSON1}")
+
+    def test_returns_people_with_graph_projection(self):
+        result = check_success(
+            self, f"{VIEWS_URL}relationship-graph/{PERSON1}?degree=1"
+        )
+        self.assertIn(PERSON1, {person["handle"] for person in result["people"]})
+        person = next(item for item in result["people"] if item["handle"] == PERSON1)
+        self.assertIn("profile", person)
+        self.assertIn("extended", person)
+
+
+class TestConnectionGraphView(unittest.TestCase):
+    """A connection graph combines path, people, and families."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.client = get_test_client()
+
+    def test_returns_complete_partner_graph(self):
+        result = check_success(self, f"{VIEWS_URL}connection-graph/{PERSON1}/{PERSON2}")
+        self.assertTrue(result["path"]["connected"])
+        self.assertEqual(result["path"]["person_handles"], [PERSON1, PERSON2])
+        self.assertEqual(
+            {person["handle"] for person in result["people"]}, {PERSON1, PERSON2}
+        )
+        self.assertEqual(len(result["families"]), 1)
+
+
+class TestAnniversariesView(unittest.TestCase):
+    """Anniversary filtering and relationship distance happen server-side."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.client = get_test_client()
+
+    def test_returns_bounded_event_list(self):
+        result = check_success(
+            self,
+            f"{VIEWS_URL}anniversaries/{PERSON1}?month=1&day=1&degree=4&limit=10",
+        )
+        self.assertIn("events", result)
+        self.assertLessEqual(len(result["events"]), 10)

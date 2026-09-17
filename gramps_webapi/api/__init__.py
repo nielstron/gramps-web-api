@@ -185,6 +185,13 @@ from .resources.user import (
     UserTriggerResetPasswordResource,
 )
 from .resources.verify import VerifyResource
+from .resources.views import (
+    AnniversariesViewResource,
+    ConnectionGraphViewResource,
+    HomePersonViewResource,
+    MapScopeViewResource,
+    RelationshipGraphViewResource,
+)
 from .resources.ydna import PersonYDnaResource
 from .util import abort_with_message, get_db_handle, get_tree_from_jwt, parser, use_args
 
@@ -689,6 +696,37 @@ register_endpt(
     "/relations/<string:handle1>/<string:handle2>/path",
     "relation-path",
     tags=["Relations"],
+)
+# SQL-backed compound frontend views
+register_endpt(
+    RelationshipGraphViewResource,
+    "/views/relationship-graph/<string:person>",
+    "view-relationship-graph",
+    tags=["Views"],
+)
+register_endpt(
+    HomePersonViewResource,
+    "/views/home-person/<string:person>",
+    "view-home-person",
+    tags=["Views"],
+)
+register_endpt(
+    ConnectionGraphViewResource,
+    "/views/connection-graph/<string:source>/<string:target>",
+    "view-connection-graph",
+    tags=["Views"],
+)
+register_endpt(
+    AnniversariesViewResource,
+    "/views/anniversaries/<string:person>",
+    "view-anniversaries",
+    tags=["Views"],
+)
+register_endpt(
+    MapScopeViewResource,
+    "/views/map-scope/<string:person>",
+    "view-map-scope",
+    tags=["Views"],
 )
 # Living
 register_endpt(
