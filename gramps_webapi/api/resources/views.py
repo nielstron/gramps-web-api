@@ -29,7 +29,13 @@ from .relationship_scope import (
     compile_connection_path_query,
     compile_relationship_scope,
 )
-from .schemas import EventSchema, FamilySchema, PersonSchema, RelationshipPathSchema
+from .schemas import (
+    EventSchema,
+    FamilySchema,
+    PersonSchema,
+    RelationshipPathSchema,
+    SearchResultSchema,
+)
 from .util import (
     display_date,
     get_event_profile_for_object,
@@ -74,6 +80,13 @@ class ConnectionGraphArgs(Schema):
     """Connection graph query arguments."""
 
     locale = fields.Str(load_default=None, validate=validate.Length(min=1, max=5))
+
+
+class RecentChangesArgs(Schema):
+    """Arguments for the compact dashboard change feed."""
+
+    since = fields.Float(load_default=0, validate=validate.Range(min=0))
+    limit = fields.Int(load_default=8, validate=validate.Range(min=1, max=100))
 
 
 class RelationshipGraphResponse(Schema):
@@ -180,6 +193,189 @@ def _json_fragment(value: Any, default: Any) -> Any:
     if isinstance(value, (dict, list)):
         return value
     return json.loads(value)
+
+
+def _recent_related_objects(
+    basedb: Any,
+    table: str,
+    handles: set[str],
+    *,
+    include_private: bool,
+) -> dict[str, dict]:
+    """Load the few records needed to label recent families and citations."""
+    if not handles:
+        return {}
+    treeid = _resolve_treeid(basedb)
+    placeholders = ", ".join("?" for _ in handles)
+    params: list[Any] = list(handles)
+    filters = [f"handle IN ({placeholders})"]
+    if treeid is not None:
+        filters.append("treeid = ?")
+        params.append(treeid)
+    if not include_private:
+        filters.append("private = 0")
+    basedb.dbapi.execute(
+        f"SELECT handle, json_data FROM {table} WHERE {' AND '.join(filters)}",
+        params,
+    )
+    return {handle: _json_fragment(raw, {}) for handle, raw in basedb.dbapi.fetchall()}
+
+
+def _recent_person_profile(item: dict | None) -> dict:
+    """Project a person name to the shape used in family result labels."""
+    if not item:
+        return {}
+    name = _project_name(item.get("primary_name"))
+    return {
+        "gramps_id": item.get("gramps_id"),
+        "name_given": name.get("first_name") or "",
+        "name_surname": _surname(name),
+        "name_suffix": name.get("suffix") or "",
+        "name_title": name.get("title") or "",
+    }
+
+
+def _recent_projection(
+    object_type: str,
+    item: dict,
+    people: dict[str, dict],
+    sources: dict[str, dict],
+) -> dict:
+    """Return only the fields rendered by the dashboard's change feed."""
+    result = {key: item.get(key) for key in ("handle", "gramps_id", "change")}
+    if object_type == "person":
+        result.update(
+            {
+                "gender": item.get("gender"),
+                "primary_name": _project_name(item.get("primary_name")),
+                "media_list": [
+                    {"ref": ref.get("ref"), "rect": ref.get("rect") or []}
+                    for ref in item.get("media_list", [])[:1]
+                    if not ref.get("private") and ref.get("ref")
+                ],
+            }
+        )
+    elif object_type == "family":
+        father = _recent_person_profile(people.get(item.get("father_handle")))
+        mother = _recent_person_profile(people.get(item.get("mother_handle")))
+        result["profile"] = {
+            key: profile
+            for key, profile in (("father", father), ("mother", mother))
+            if profile
+        }
+    elif object_type == "event":
+        result["type"] = item.get("type")
+    elif object_type == "place":
+        result.update({"name": item.get("name"), "title": item.get("title")})
+    elif object_type == "source":
+        result["title"] = item.get("title")
+    elif object_type == "citation":
+        source = sources.get(item.get("source_handle"), {})
+        result["profile"] = {
+            "page": item.get("page") or "",
+            "source": {"title": source.get("title") or ""},
+        }
+    elif object_type == "repository":
+        result.update({"name": item.get("name"), "type": item.get("type")})
+    elif object_type == "media":
+        result.update(
+            {
+                "desc": item.get("desc"),
+                "mime": item.get("mime"),
+                "checksum": item.get("checksum"),
+            }
+        )
+    elif object_type == "note":
+        result["type"] = item.get("type")
+    elif object_type == "tag":
+        result.update({"name": item.get("name"), "color": item.get("color")})
+    return result
+
+
+def get_recent_changes_view(db: Any, *, since: float, limit: int) -> list[dict]:
+    """Select and project the newest primary objects without a search index."""
+    basedb = _base_db(db)
+    treeid = _resolve_treeid(basedb)
+    include_private = has_permissions({PERM_VIEW_PRIVATE})
+    object_types = (
+        "person",
+        "family",
+        "event",
+        "place",
+        "citation",
+        "source",
+        "repository",
+        "media",
+        "note",
+        "tag",
+    )
+    selects = []
+    params: list[Any] = []
+    for object_type in object_types:
+        filters = ["change > ?"]
+        params.append(since)
+        if treeid is not None:
+            filters.append("treeid = ?")
+            params.append(treeid)
+        if not include_private:
+            filters.append("private = 0")
+        selects.append(
+            f"SELECT '{object_type}' AS object_type, handle, change "
+            f"FROM {object_type} WHERE {' AND '.join(filters)}"
+        )
+    params.append(limit)
+    object_rows = " UNION ALL ".join(
+        f"SELECT recent.object_type, recent.handle, recent.change, "
+        f"{object_type}.json_data "
+        f"FROM recent JOIN {object_type} ON recent.object_type = '{object_type}' "
+        f"AND {object_type}.handle = recent.handle"
+        for object_type in object_types
+    )
+    basedb.dbapi.execute(
+        f"""
+WITH changed AS ({' UNION ALL '.join(selects)}),
+recent AS (
+  SELECT object_type, handle, change
+  FROM changed
+  ORDER BY change DESC, object_type, handle
+  LIMIT ?
+)
+SELECT object_type, handle, change, json_data
+FROM ({object_rows}) AS recent_objects
+ORDER BY change DESC, object_type, handle
+""",
+        params,
+    )
+    rows = [
+        (object_type, handle, change, _json_fragment(raw, {}))
+        for object_type, handle, change, raw in basedb.dbapi.fetchall()
+    ]
+    family_people = {
+        handle
+        for object_type, _, _, item in rows
+        if object_type == "family"
+        for handle in (item.get("father_handle"), item.get("mother_handle"))
+        if handle
+    }
+    citation_sources = {
+        item.get("source_handle")
+        for object_type, _, _, item in rows
+        if object_type == "citation" and item.get("source_handle")
+    }
+    people = _recent_related_objects(
+        basedb, "person", family_people, include_private=include_private
+    )
+    sources = _recent_related_objects(
+        basedb, "source", citation_sources, include_private=include_private
+    )
+    return [
+        {
+            "handle": handle,
+            "object_type": object_type,
+            "object": _recent_projection(object_type, item, people, sources),
+        }
+        for object_type, handle, _, item in rows
+    ]
 
 
 def _type_name(value: Any, names: dict[int, str], default: str) -> str:
@@ -598,6 +794,22 @@ class HomePersonViewResource(
         """Return a home person by handle or Gramps ID without a table scan."""
         db = get_db_handle()
         return self.response(200, {"person": get_home_person_view(db, person)})
+
+
+class RecentChangesViewResource(ProtectedResource, GrampsJSONEncoder):
+    """Compact, directly queried change feed for the dashboard."""
+
+    @api_blueprint.response(200, SearchResultSchema(many=True))
+    @api_blueprint.arguments(RecentChangesArgs, location="query")
+    @request_cache_decorator
+    def get(self, args: dict) -> Response:
+        """Return the most recently changed primary objects."""
+        return self.response(
+            200,
+            get_recent_changes_view(
+                get_db_handle(), since=args["since"], limit=args["limit"]
+            ),
+        )
 
 
 class ConnectionGraphViewResource(

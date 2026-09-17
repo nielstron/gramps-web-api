@@ -76,3 +76,30 @@ class TestAnniversariesView(unittest.TestCase):
         )
         self.assertIn("events", result)
         self.assertLessEqual(len(result["events"]), 10)
+
+
+class TestRecentChangesView(unittest.TestCase):
+    """The dashboard change feed is a compact direct database view."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.client = get_test_client()
+
+    def test_requires_token(self):
+        check_requires_token(self, f"{VIEWS_URL}recent-changes")
+
+    def test_returns_sorted_compact_objects(self):
+        result = check_success(self, f"{VIEWS_URL}recent-changes?limit=8")
+        self.assertEqual(len(result), 8)
+        changes = [item["object"]["change"] for item in result]
+        self.assertEqual(changes, sorted(changes, reverse=True))
+        for item in result:
+            self.assertEqual(item["handle"], item["object"]["handle"])
+            self.assertIn("gramps_id", item["object"])
+            self.assertLessEqual(len(item["object"]), 8)
+
+    def test_since_can_exclude_all_objects(self):
+        result = check_success(
+            self, f"{VIEWS_URL}recent-changes?since=9999999999&limit=8"
+        )
+        self.assertEqual(result, [])

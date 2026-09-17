@@ -190,6 +190,7 @@ from .resources.views import (
     ConnectionGraphViewResource,
     HomePersonViewResource,
     MapScopeViewResource,
+    RecentChangesViewResource,
     RelationshipGraphViewResource,
 )
 from .resources.ydna import PersonYDnaResource
@@ -708,6 +709,12 @@ register_endpt(
     HomePersonViewResource,
     "/views/home-person/<string:person>",
     "view-home-person",
+    tags=["Views"],
+)
+register_endpt(
+    RecentChangesViewResource,
+    "/views/recent-changes",
+    "view-recent-changes",
     tags=["Views"],
 )
 register_endpt(
