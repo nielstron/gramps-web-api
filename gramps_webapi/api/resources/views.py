@@ -42,6 +42,19 @@ from .util import (
     get_person_profile_for_object,
 )
 
+VIEW_OBJECT_TYPES = (
+    "person",
+    "family",
+    "event",
+    "place",
+    "citation",
+    "source",
+    "repository",
+    "media",
+    "note",
+    "tag",
+)
+
 
 class RelationshipGraphArgs(Schema):
     """Relationship graph query arguments."""
@@ -87,6 +100,18 @@ class RecentChangesArgs(Schema):
 
     since = fields.Float(load_default=0, validate=validate.Range(min=0))
     limit = fields.Int(load_default=8, validate=validate.Range(min=1, max=100))
+    type = fields.DelimitedList(fields.Str(validate=validate.OneOf(VIEW_OBJECT_TYPES)))
+
+
+class ObjectSummariesArgs(Schema):
+    """Arguments for compact picker cards identified by type and handle."""
+
+    objects = fields.DelimitedList(
+        fields.Str(validate=validate.Length(min=3, max=255)),
+        required=True,
+        validate=validate.Length(min=1, max=100),
+    )
+    locale = fields.Str(load_default=None, validate=validate.Length(min=1, max=5))
 
 
 class RelationshipGraphResponse(Schema):
@@ -292,26 +317,17 @@ def _recent_projection(
     return result
 
 
-def get_recent_changes_view(db: Any, *, since: float, limit: int) -> list[dict]:
+def get_recent_changes_view(
+    db: Any, *, since: float, limit: int, object_types: list[str] | None = None
+) -> list[dict]:
     """Select and project the newest primary objects without a search index."""
     basedb = _base_db(db)
     treeid = _resolve_treeid(basedb)
     include_private = has_permissions({PERM_VIEW_PRIVATE})
-    object_types = (
-        "person",
-        "family",
-        "event",
-        "place",
-        "citation",
-        "source",
-        "repository",
-        "media",
-        "note",
-        "tag",
-    )
+    selected_types = tuple(dict.fromkeys(object_types or VIEW_OBJECT_TYPES))
     selects = []
     params: list[Any] = []
-    for object_type in object_types:
+    for object_type in selected_types:
         filters = ["change > ?"]
         params.append(since)
         if treeid is not None:
@@ -329,7 +345,7 @@ def get_recent_changes_view(db: Any, *, since: float, limit: int) -> list[dict]:
         f"{object_type}.json_data "
         f"FROM recent JOIN {object_type} ON recent.object_type = '{object_type}' "
         f"AND {object_type}.handle = recent.handle"
-        for object_type in object_types
+        for object_type in selected_types
     )
     basedb.dbapi.execute(
         f"""
@@ -578,6 +594,154 @@ LIMIT 1
     return f"COALESCE({indexed}, ({fallback.strip()}))"
 
 
+def get_person_card_summaries(
+    db: Any, handles: list[str], locale: Any
+) -> dict[str, dict]:
+    """Fetch the fields used by person picker/search cards in one SQL query."""
+    if not handles or isinstance(db, ProxyDbBase):
+        return {}
+    basedb = _base_db(db)
+    dialect = _resolve_dialect(basedb)
+    treeid = _resolve_treeid(basedb)
+    placeholders = ", ".join("?" for _ in handles)
+    params: list[Any] = list(handles)
+    if dialect.value == "sqlite":
+        primary = "json_extract(person.json_data, '$.primary_name')"
+        birth_date = "json_extract(birth_event.json_data, '$.date')"
+        place_name = "json_extract(place.json_data, '$.name.value')"
+    else:
+        primary = "person.json_data::jsonb -> 'primary_name'"
+        birth_date = "birth_event.json_data::jsonb -> 'date'"
+        place_name = "place.json_data::jsonb #>> '{name,value}'"
+    birth_ref = _person_event_ref_sql(dialect, "birth", treeid)
+    tree_person = ""
+    tree_event = ""
+    tree_place = ""
+    if treeid is not None:
+        tree_person = " AND person.treeid = ?"
+        params.append(treeid)
+        tree_event = " AND birth_event.treeid = person.treeid"
+        tree_place = " AND place.treeid = person.treeid"
+    basedb.dbapi.execute(
+        f"""
+SELECT person.handle, person.gramps_id, person.gender, person.change,
+       {primary}, {birth_date}, {place_name}
+FROM person
+LEFT JOIN event AS birth_event
+  ON birth_event.handle = {birth_ref}{tree_event}
+LEFT JOIN place
+  ON place.handle = birth_event.place{tree_place}
+WHERE person.handle IN ({placeholders}){tree_person}
+""",
+        params,
+    )
+    result = {}
+    for (
+        handle,
+        gramps_id,
+        gender,
+        change,
+        primary_raw,
+        birth_raw,
+        place,
+    ) in basedb.dbapi.fetchall():
+        name = _project_name(primary_raw)
+        birth = _project_date(birth_raw, locale)
+        if place:
+            birth["place_name"] = place
+        result[handle] = {
+            "handle": handle,
+            "gramps_id": gramps_id,
+            "gender": gender,
+            "change": change,
+            "primary_name": name,
+            "profile": {
+                "handle": handle,
+                "gramps_id": gramps_id,
+                "sex": {0: "F", 1: "M", 3: "X"}.get(gender, "U"),
+                "birth": birth,
+                "name_given": name.get("first_name") or "",
+                "name_surname": _surname(name),
+                "name_suffix": name.get("suffix") or "",
+                "name_title": name.get("title") or "",
+            },
+        }
+    return result
+
+
+def get_object_summaries_view(
+    db: Any, references: list[tuple[str, str]], locale: Any
+) -> list[dict]:
+    """Return compact cards for typed handles, preserving the requested order."""
+    basedb = _base_db(db)
+    treeid = _resolve_treeid(basedb)
+    include_private = has_permissions({PERM_VIEW_PRIVATE})
+    grouped: dict[str, list[str]] = {}
+    for object_type, handle in references:
+        grouped.setdefault(object_type, []).append(handle)
+
+    items: dict[tuple[str, str], dict] = {}
+    for object_type, identifiers in grouped.items():
+        placeholders = ", ".join("?" for _ in identifiers)
+        params: list[Any] = [*identifiers, *identifiers]
+        filters = [f"(handle IN ({placeholders}) OR gramps_id IN ({placeholders}))"]
+        if treeid is not None:
+            filters.append("treeid = ?")
+            params.append(treeid)
+        if not include_private:
+            filters.append("private = 0")
+        basedb.dbapi.execute(
+            f"SELECT handle, gramps_id, json_data FROM {object_type} "
+            f"WHERE {' AND '.join(filters)}",
+            params,
+        )
+        for handle, gramps_id, raw in basedb.dbapi.fetchall():
+            item = _json_fragment(raw, {})
+            items[(object_type, handle)] = item
+            items[(object_type, gramps_id)] = item
+
+    person_handles = list(
+        dict.fromkeys(
+            items[(object_type, identifier)].get("handle")
+            for object_type, identifier in references
+            if object_type == "person" and (object_type, identifier) in items
+        )
+    )
+    person_summaries = get_person_card_summaries(db, person_handles, locale)
+    family_people = {
+        handle
+        for (object_type, _), item in items.items()
+        if object_type == "family"
+        for handle in (item.get("father_handle"), item.get("mother_handle"))
+        if handle
+    }
+    citation_sources = {
+        item.get("source_handle")
+        for (object_type, _), item in items.items()
+        if object_type == "citation" and item.get("source_handle")
+    }
+    people = _recent_related_objects(
+        basedb, "person", family_people, include_private=include_private
+    )
+    sources = _recent_related_objects(
+        basedb, "source", citation_sources, include_private=include_private
+    )
+
+    result = []
+    for object_type, identifier in references:
+        item = items.get((object_type, identifier))
+        if item is None:
+            continue
+        handle = item.get("handle")
+        projection = person_summaries.get(handle) or _recent_projection(
+            object_type, item, people, sources
+        )
+        result.append(
+            {"handle": handle, "object_type": object_type, "object": projection}
+        )
+    return result
+
+
 def _relationship_graph_rows(
     basedb: Any, cte: str, params: list[Any], dialect: Any
 ) -> list[tuple]:
@@ -807,8 +971,33 @@ class RecentChangesViewResource(ProtectedResource, GrampsJSONEncoder):
         return self.response(
             200,
             get_recent_changes_view(
-                get_db_handle(), since=args["since"], limit=args["limit"]
+                get_db_handle(),
+                since=args["since"],
+                limit=args["limit"],
+                object_types=args.get("type"),
             ),
+        )
+
+
+class ObjectSummariesViewResource(ProtectedResource, GrampsJSONEncoder):
+    """Compact card projections for picker history and bookmarks."""
+
+    @api_blueprint.response(200, SearchResultSchema(many=True))
+    @api_blueprint.arguments(ObjectSummariesArgs, location="query")
+    @request_cache_decorator
+    def get(self, args: dict) -> Response:
+        """Resolve typed handles without full-object API requests."""
+        references = []
+        for value in args["objects"]:
+            object_type, separator, handle = value.partition(":")
+            if not separator or object_type not in VIEW_OBJECT_TYPES or not handle:
+                abort_with_message(422, f"Invalid object reference: {value}")
+            pair = (object_type, handle)
+            if pair not in references:
+                references.append(pair)
+        locale = get_locale_for_language(args["locale"], default=True)
+        return self.response(
+            200, get_object_summaries_view(get_db_handle(), references, locale)
         )
 
 

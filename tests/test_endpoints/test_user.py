@@ -185,6 +185,8 @@ class TestUser(unittest.TestCase):
             },
         )
         assert response.status_code == 201, response.text
+        assert response.json["access_token"]
+        assert response.json["refresh_token"]
         details = get_user_details("invited")
         assert details["email"] == "invited@example.com"
         assert details["full_name"] == "Invited Person"

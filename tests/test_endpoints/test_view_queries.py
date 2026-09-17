@@ -108,3 +108,42 @@ class TestRecentChangesView(unittest.TestCase):
             self, f"{VIEWS_URL}recent-changes?since=9999999999&limit=8"
         )
         self.assertEqual(result, [])
+
+    def test_can_filter_to_picker_object_types(self):
+        result = check_success(
+            self, f"{VIEWS_URL}recent-changes?limit=8&type=person,event"
+        )
+        self.assertTrue(result)
+        self.assertLessEqual(
+            {item["object_type"] for item in result}, {"person", "event"}
+        )
+
+
+class TestObjectSummariesView(unittest.TestCase):
+    """Picker history and bookmarks resolve in one compact request."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.client = get_test_client()
+
+    def test_requires_token(self):
+        check_requires_token(
+            self, f"{VIEWS_URL}object-summaries?objects=person:{PERSON1}"
+        )
+
+    def test_resolves_handles_and_gramps_ids_in_request_order(self):
+        by_handle = check_success(
+            self, f"{VIEWS_URL}object-summaries?objects=person:{PERSON1}&locale=en"
+        )
+        self.assertEqual(len(by_handle), 1)
+        person = by_handle[0]
+        self.assertEqual(person["handle"], PERSON1)
+        self.assertEqual(person["object_type"], "person")
+        self.assertIn("profile", person["object"])
+        self.assertNotIn("event_ref_list", person["object"])
+
+        by_id = check_success(
+            self,
+            f"{VIEWS_URL}object-summaries?objects=person:{person['object']['gramps_id']},person:missing&locale=en",
+        )
+        self.assertEqual([item["handle"] for item in by_id], [PERSON1])

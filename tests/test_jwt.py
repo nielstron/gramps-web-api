@@ -30,8 +30,8 @@ from gramps.gen.dbstate import DbState
 from gramps.gen.lib import Person, Surname
 
 from gramps_webapi.app import create_app
-from gramps_webapi.auth import add_user, user_db, get_guid, get_permissions
-from gramps_webapi.auth.const import ROLE_GUEST, ROLE_OWNER, ROLE_EDITOR
+from gramps_webapi.auth import add_user, get_guid, get_permissions, user_db
+from gramps_webapi.auth.const import ROLE_EDITOR, ROLE_GUEST, ROLE_OWNER
 from gramps_webapi.const import ENV_CONFIG_FILE, TEST_AUTH_CONFIG
 from gramps_webapi.dbmanager import WebDbManager
 
@@ -66,7 +66,13 @@ class TestPerson(unittest.TestCase):
         tree = db_manager.dirname
         with cls.app.app_context():
             user_db.create_all()
-            add_user(name="user", password="123", role=ROLE_GUEST, tree=tree)
+            add_user(
+                name="user",
+                password="123",
+                email="User.Login@example.com",
+                role=ROLE_GUEST,
+                tree=tree,
+            )
             add_user(name="admin", password="123", role=ROLE_OWNER, tree=tree)
             add_user(name="user_notree", password="123", role=ROLE_GUEST)
             add_user(
@@ -177,6 +183,15 @@ class TestPerson(unittest.TestCase):
         assert rv.status_code == 403
         rv = self.client.post(
             "/api/token/", json={"username": "user", "password": "123"}
+        )
+        assert rv.status_code == 200
+        assert "refresh_token" in rv.json
+        assert "access_token" in rv.json
+
+    def test_token_endpoint_accepts_email_case_insensitively(self):
+        rv = self.client.post(
+            "/api/token/",
+            json={"username": "user.login@EXAMPLE.COM", "password": "123"},
         )
         assert rv.status_code == 200
         assert "refresh_token" in rv.json

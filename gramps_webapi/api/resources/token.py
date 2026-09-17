@@ -31,20 +31,20 @@ from marshmallow import Schema
 from webargs import fields, validate
 
 from ...auth import (
-    authorized,
     get_all_user_details,
     get_guid,
     get_name,
     get_permissions,
     is_tree_disabled,
+    resolve_login_name,
 )
-from ...auth.oidc_helpers import is_oidc_enabled
 from ...auth.const import (
     CLAIM_LIMITED_SCOPE,
     PERM_VIEW_OTHER_TREE,
     SCOPE_CREATE_ADMIN,
     SCOPE_CREATE_OWNER,
 )
+from ...auth.oidc_helpers import is_oidc_enabled
 from ...const import TREE_MULTI
 from ..blueprint import api_blueprint
 from ..ratelimiter import limiter
@@ -105,7 +105,7 @@ class TokenLoginSchema(Schema):
     username = fields.Str(
         required=True,
         validate=validate.Length(min=1),
-        metadata={"description": "The username for authentication."},
+        metadata={"description": "The username or email for authentication."},
     )
     password = fields.Str(
         required=True,
@@ -146,11 +146,12 @@ class TokenResource(Resource):
 
         if "username" not in args or "password" not in args:
             abort_with_message(401, "Missing username or password")
-        if not authorized(args.get("username"), args.get("password")):
+        username = resolve_login_name(args["username"], args["password"])
+        if username is None:
             abort_with_message(403, "Invalid username or password")
-        user_id = get_guid(args["username"])
+        user_id = get_guid(username)
         tree_id, permissions = get_tree_id_and_permissions(
-            user_id=user_id, username=args["username"]
+            user_id=user_id, username=username
         )
         return get_tokens(
             user_id=user_id,

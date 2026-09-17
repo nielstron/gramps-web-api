@@ -32,6 +32,7 @@ from ..ratelimiter import limiter
 from ..tasks import run_task, send_email_invitation
 from ..util import abort_with_message, get_config, get_tree_from_jwt, tree_exists
 from . import LimitedScopeProtectedResource, ProtectedResource
+from .token import get_tokens, get_tree_id_and_permissions
 
 
 def _now():
@@ -282,4 +283,18 @@ class UserAcceptInvitationResource(LimitedScopeProtectedResource):
                     409, "This username is already taken; please choose another"
                 )
             raise
-        return "", 201
+        tree_id, permissions = get_tree_id_and_permissions(
+            user_id=str(user.id), username=user.name
+        )
+        return (
+            jsonify(
+                get_tokens(
+                    user_id=str(user.id),
+                    permissions=permissions,
+                    tree_id=tree_id,
+                    include_refresh=True,
+                    fresh=True,
+                )
+            ),
+            201,
+        )

@@ -23,8 +23,7 @@
 </form>
 <p id="error" class="error" role="alert" hidden></p>
 <div id="success" class="success" role="status" hidden>
-  <p>Your account is ready. You can now sign in with your username and password.</p>
-  <a href="{{login_url}}">Sign in</a>
+  <p>Your account is ready. Signing you in…</p>
 </div>
 <script>
   const form = document.getElementById('invitation-form');
@@ -55,8 +54,14 @@
         const result = await response.json();
         throw new Error(result.error?.message || result.message || 'Unable to create your account.');
       }
+      const result = await response.json();
+      const payload = JSON.parse(atob(result.access_token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
+      localStorage.setItem('access_token', result.access_token);
+      localStorage.setItem('access_token_expires', payload.exp * 1000);
+      localStorage.setItem('refresh_token', result.refresh_token);
       form.hidden = true;
       document.getElementById('success').hidden = false;
+      window.location.replace({{login_url|tojson}});
     } catch (err) {
       error.textContent = err.message;
       error.hidden = false;

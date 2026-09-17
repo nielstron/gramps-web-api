@@ -226,16 +226,26 @@ def modify_user(
             raise
 
 
-def authorized(username: str, password: str) -> bool:
-    """Return true if the user can be authenticated."""
+def resolve_login_name(identifier: str, password: str) -> Optional[str]:
+    """Return the canonical username for valid username-or-email credentials."""
     query = user_db.session.query(User)  # pylint: disable=no-member
-    user = query.filter_by(name=username).scalar()
+    user = query.filter_by(name=identifier).scalar()
     if user is None:
-        return False
+        users = query.filter(sa.func.lower(User.email) == identifier.casefold()).all()
+        if len(users) != 1:
+            return None
+        user = users[0]
     if user.role < 0:
         # users with negative roles cannot login!
-        return False
-    return verify_password(password=password, salt_hash=user.pwhash)
+        return None
+    if not verify_password(password=password, salt_hash=user.pwhash):
+        return None
+    return user.name
+
+
+def authorized(username: str, password: str) -> bool:
+    """Return true if the username or email and password are valid."""
+    return resolve_login_name(username, password) is not None
 
 
 def get_pwhash(username: str) -> str:

@@ -190,6 +190,7 @@ from .resources.views import (
     ConnectionGraphViewResource,
     HomePersonViewResource,
     MapScopeViewResource,
+    ObjectSummariesViewResource,
     RecentChangesViewResource,
     RelationshipGraphViewResource,
 )
@@ -715,6 +716,12 @@ register_endpt(
     RecentChangesViewResource,
     "/views/recent-changes",
     "view-recent-changes",
+    tags=["Views"],
+)
+register_endpt(
+    ObjectSummariesViewResource,
+    "/views/object-summaries",
+    "view-object-summaries",
     tags=["Views"],
 )
 register_endpt(
