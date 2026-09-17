@@ -173,12 +173,31 @@ class UserSettingsArgsSchema(Schema):
     )
 
 
+class UserSettingsGetArgsSchema(Schema):
+    """Optional projections returned alongside private user settings."""
+
+    include_home_person = fields.Boolean(load_default=False)
+
+
 class UserSettingsResource(ProtectedResource):
     """Read and update settings for the authenticated user."""
 
-    def get(self):
+    @api_blueprint.arguments(UserSettingsGetArgsSchema, location="query")
+    def get(self, args):
         """Get the current user's private settings."""
-        return jsonify(get_user_settings(get_jwt_identity()))
+        settings = get_user_settings(get_jwt_identity())
+        if args["include_home_person"] and settings.get("homePerson"):
+            # Imported lazily: the view module also registers API resources,
+            # while this module is imported earlier during blueprint setup.
+            from .views import get_home_person_view
+
+            settings = {
+                **settings,
+                "homePersonDetails": get_home_person_view(
+                    get_db_handle(), settings["homePerson"]
+                ),
+            }
+        return jsonify(settings)
 
     @api_blueprint.arguments(UserSettingsArgsSchema, location="json")
     def put(self, args):

@@ -27,7 +27,22 @@ class TestRelationshipGraphView(unittest.TestCase):
         self.assertIn(PERSON1, {person["handle"] for person in result["people"]})
         person = next(item for item in result["people"] if item["handle"] == PERSON1)
         self.assertIn("profile", person)
-        self.assertIn("extended", person)
+        self.assertIn("families", result)
+        self.assertIn("family_handles", person)
+        self.assertNotIn("event_ref_list", person)
+        self.assertEqual(
+            set(person),
+            {
+                "handle",
+                "gramps_id",
+                "primary_name",
+                "alternate_names",
+                "media_list",
+                "profile",
+                "family_handles",
+                "primary_parent_family_handle",
+            },
+        )
 
 
 class TestConnectionGraphView(unittest.TestCase):

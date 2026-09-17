@@ -29,6 +29,7 @@ from flask_jwt_extended import get_jwt_identity
 from gramps.gen.db.base import DbReadBase
 from gramps.gen.errors import HandleError
 from gramps.gen.lib.primaryobj import BasicPrimaryObject as GrampsObject
+from gramps.gen.proxy.proxybase import ProxyDbBase
 from gramps.gen.utils.grampslocale import GrampsLocale
 from marshmallow import Schema
 from webargs import fields, validate
@@ -69,6 +70,15 @@ from .util import (
     get_person_profile_for_object,
     get_place_profile_for_object,
     get_repository_profile_for_object,
+)
+from .views import (
+    _base_db,
+    _person_event_ref_sql,
+    _project_date,
+    _project_name,
+    _resolve_dialect,
+    _resolve_treeid,
+    _surname,
 )
 
 
@@ -131,6 +141,12 @@ class SearchQueryArgs(Schema):
         load_default=False,
         metadata={
             "description": "If true, strip keys with empty values from the response."
+        },
+    )
+    summary = fields.Boolean(
+        load_default=False,
+        metadata={
+            "description": "Return the compact object projection used by search result cards."
         },
     )
     type = fields.DelimitedList(
@@ -214,6 +230,80 @@ class SearchResource(GrampsJSONEncoder, ProtectedResource):
 
         return obj
 
+    def get_person_summaries(
+        self, handles: list[str], locale: GrampsLocale
+    ) -> dict[str, dict]:
+        """Fetch the fields used by person search cards in one SQL query."""
+        if not handles or isinstance(self.db_handle, ProxyDbBase):
+            return {}
+        basedb = _base_db(self.db_handle)
+        dialect = _resolve_dialect(basedb)
+        treeid = _resolve_treeid(basedb)
+        placeholders = ", ".join("?" for _ in handles)
+        params: list = list(handles)
+        if dialect.value == "sqlite":
+            primary = "json_extract(person.json_data, '$.primary_name')"
+            birth_date = "json_extract(birth_event.json_data, '$.date')"
+            place_name = "json_extract(place.json_data, '$.name.value')"
+        else:
+            primary = "person.json_data::jsonb -> 'primary_name'"
+            birth_date = "birth_event.json_data::jsonb -> 'date'"
+            place_name = "place.json_data::jsonb #>> '{name,value}'"
+        birth_ref = _person_event_ref_sql(dialect, "birth", treeid)
+        tree_person = ""
+        tree_event = ""
+        tree_place = ""
+        if treeid is not None:
+            tree_person = " AND person.treeid = ?"
+            params.append(treeid)
+            tree_event = " AND birth_event.treeid = person.treeid"
+            tree_place = " AND place.treeid = person.treeid"
+        basedb.dbapi.execute(
+            f"""
+SELECT person.handle, person.gramps_id, person.gender, person.change,
+       {primary}, {birth_date}, {place_name}
+FROM person
+LEFT JOIN event AS birth_event
+  ON birth_event.handle = {birth_ref}{tree_event}
+LEFT JOIN place
+  ON place.handle = birth_event.place{tree_place}
+WHERE person.handle IN ({placeholders}){tree_person}
+""",
+            params,
+        )
+        result = {}
+        for (
+            handle,
+            gramps_id,
+            gender,
+            change,
+            primary_raw,
+            birth_raw,
+            place,
+        ) in basedb.dbapi.fetchall():
+            name = _project_name(primary_raw)
+            birth = _project_date(birth_raw, locale)
+            if place:
+                birth["place_name"] = place
+            result[handle] = {
+                "handle": handle,
+                "gramps_id": gramps_id,
+                "gender": gender,
+                "change": change,
+                "primary_name": name,
+                "profile": {
+                    "handle": handle,
+                    "gramps_id": gramps_id,
+                    "sex": {0: "F", 1: "M", 3: "X"}.get(gender, "U"),
+                    "birth": birth,
+                    "name_given": name.get("first_name") or "",
+                    "name_surname": _surname(name),
+                    "name_suffix": name.get("suffix") or "",
+                    "name_title": name.get("title") or "",
+                },
+            }
+        return result
+
     @api_blueprint.response(200, SearchResultSchema(many=True))
     @api_blueprint.arguments(SearchQueryArgs, location="query")
     def get(self, args: Dict):
@@ -256,12 +346,26 @@ class SearchResource(GrampsJSONEncoder, ProtectedResource):
         )
         if hits:
             locale = get_locale_for_language(args["locale"], default=True)
+            person_summaries = (
+                self.get_person_summaries(
+                    [hit["handle"] for hit in hits if hit["object_type"] == "person"],
+                    locale,
+                )
+                if args["summary"]
+                else {}
+            )
             for hit in hits:
                 try:
+                    if hit["handle"] in person_summaries:
+                        hit["object"] = person_summaries[hit["handle"]]
+                        continue
+                    object_args = args
+                    if args["summary"] and "profile" not in args:
+                        object_args = {**args, "profile": ["self"]}
                     hit["object"] = self.get_object_from_handle(
                         handle=hit["handle"],
                         class_name=hit["object_type"],
-                        args=args,
+                        args=object_args,
                         locale=locale,
                     )
                 except HandleError:

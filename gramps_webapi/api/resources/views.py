@@ -9,7 +9,7 @@ from typing import Any
 
 from flask import Response
 from gramps.gen.errors import HandleError
-from gramps.gen.lib.json_utils import object_to_dict
+from gramps.gen.lib.json_utils import data_to_object, object_to_dict
 from gramps.gen.proxy.proxybase import ProxyDbBase
 from marshmallow import Schema, validate
 from webargs import fields
@@ -18,6 +18,7 @@ from ...auth.const import PERM_VIEW_PRIVATE
 from ..auth import has_permissions
 from ..blueprint import api_blueprint
 from ..cache import request_cache_decorator
+from ..relation_path import _step_relationship_type
 from ..util import abort_with_message, get_db_handle, get_locale_for_language
 from . import ProtectedResource
 from .emit import GrampsJSONEncoder
@@ -28,9 +29,12 @@ from .relationship_scope import (
     compile_connection_path_query,
     compile_relationship_scope,
 )
-from ..relation_path import _step_relationship_type
 from .schemas import EventSchema, FamilySchema, PersonSchema, RelationshipPathSchema
-from .util import get_event_profile_for_object
+from .util import (
+    display_date,
+    get_event_profile_for_object,
+    get_person_profile_for_object,
+)
 
 
 class RelationshipGraphArgs(Schema):
@@ -74,6 +78,7 @@ class ConnectionGraphArgs(Schema):
 
 class RelationshipGraphResponse(Schema):
     people = fields.List(fields.Nested(PersonSchema), required=True)
+    families = fields.List(fields.Nested(FamilySchema), required=True)
 
 
 class AnniversariesResponse(Schema):
@@ -168,6 +173,348 @@ def _map_projection(object_type: str, item: dict) -> dict:
     }
 
 
+def _json_fragment(value: Any, default: Any) -> Any:
+    """Decode a JSON column fragment returned by SQLite or PostgreSQL."""
+    if value is None:
+        return default
+    if isinstance(value, (dict, list)):
+        return value
+    return json.loads(value)
+
+
+def _type_name(value: Any, names: dict[int, str], default: str) -> str:
+    """Return the stable XML name of a projected Gramps type."""
+    if not isinstance(value, dict):
+        return value or default
+    custom = value.get("string")
+    if custom:
+        return custom
+    return names.get(value.get("value"), default)
+
+
+def _project_name(value: Any) -> dict:
+    name = _json_fragment(value, {})
+    if not name or name.get("private"):
+        return {}
+    name = {
+        key: name.get(key)
+        for key in ("first_name", "suffix", "title", "call", "surname_list")
+    } | {
+        "type": _type_name(
+            name.get("type"),
+            {
+                -1: "Unknown",
+                0: "Custom",
+                1: "Also Known As",
+                2: "Birth Name",
+                3: "Married Name",
+            },
+            "Unknown",
+        )
+    }
+    name["surname_list"] = [
+        {key: surname.get(key) for key in ("surname", "prefix", "connector", "primary")}
+        for surname in name.get("surname_list") or []
+    ]
+    return name
+
+
+def _project_date(value: Any, locale: Any) -> dict:
+    raw = _json_fragment(value, {})
+    if not raw:
+        return {}
+    return {"date": display_date(data_to_object(raw), locale)}
+
+
+def _surname(name: dict) -> str:
+    return " ".join(
+        part
+        for surname in name.get("surname_list", [])
+        for part in (
+            surname.get("prefix"),
+            surname.get("surname"),
+            surname.get("connector"),
+        )
+        if part
+    )
+
+
+def _person_graph_projection(row: tuple, locale: Any) -> dict:
+    """Build the compact person shape consumed by relationship cards."""
+    (
+        _,
+        handle,
+        gramps_id,
+        gender,
+        primary_raw,
+        alternates_raw,
+        media_raw,
+        family_handles_raw,
+        primary_parent_handle,
+        birth_raw,
+        death_raw,
+        *_,
+    ) = row
+    primary = _project_name(primary_raw)
+    alternates = [
+        projected
+        for value in _json_fragment(alternates_raw, [])
+        if (projected := _project_name(value))
+    ]
+    media = _json_fragment(media_raw, {})
+    media_list = []
+    if media and not media.get("private") and media.get("ref"):
+        media_list.append({"ref": media["ref"], "rect": media.get("rect") or []})
+    first_name = primary.get("first_name") or ""
+    surname = _surname(primary)
+    title = primary.get("title") or ""
+    display = " ".join(part for part in (title, first_name, surname) if part)
+    return {
+        "handle": handle,
+        "gramps_id": gramps_id,
+        "primary_name": primary,
+        "alternate_names": alternates,
+        "media_list": media_list,
+        "profile": {
+            "handle": handle,
+            "gramps_id": gramps_id,
+            "sex": {0: "F", 1: "M", 3: "X"}.get(gender, "U"),
+            "birth": _project_date(birth_raw, locale),
+            "death": _project_date(death_raw, locale),
+            "name_given": first_name,
+            "name_surname": surname,
+            "name_display": display,
+            "name_suffix": primary.get("suffix") or "",
+            "name_title": title,
+        },
+        "_family_handles": _json_fragment(family_handles_raw, []),
+        "_primary_parent_handle": primary_parent_handle,
+    }
+
+
+def _family_graph_projection(row: tuple) -> dict:
+    """Build the compact family shape consumed by relationship edges."""
+    handle, father, mother, type_raw, children_raw = row[11:]
+    child_types = {
+        0: "None",
+        1: "Birth",
+        2: "Adopted",
+        3: "Stepchild",
+        4: "Sponsored",
+        5: "Foster",
+        6: "Unknown",
+        7: "Custom",
+    }
+    children = []
+    for child in _json_fragment(children_raw, []):
+        if child.get("private"):
+            continue
+        children.append(
+            {
+                "ref": child.get("ref"),
+                "frel": _type_name(child.get("frel"), child_types, "Unknown"),
+                "mrel": _type_name(child.get("mrel"), child_types, "Unknown"),
+            }
+        )
+    return {
+        "handle": handle,
+        "father_handle": father or "",
+        "mother_handle": mother or "",
+        "type": _type_name(
+            _json_fragment(type_raw, {}),
+            {
+                0: "Married",
+                1: "Unmarried",
+                2: "Civil Union",
+                3: "Unknown",
+                4: "Custom",
+            },
+            "Unknown",
+        ),
+        "child_ref_list": children,
+    }
+
+
+def _person_event_ref_sql(dialect: Any, kind: str, treeid: Any) -> str:
+    """Select a preferred birth/death ref, including Gramps' fallbacks."""
+    index = f"person.{kind}_ref_index"
+    fallback_types = {
+        "birth": (45, 15, 22),
+        "death": (45, 19, 24, 20, 39),
+    }[kind]
+    type_list = ", ".join(str(value) for value in fallback_types)
+    tree_clause = (
+        " AND fallback_event.treeid = person.treeid" if treeid is not None else ""
+    )
+    if dialect.value == "sqlite":
+        indexed = (
+            f"CASE WHEN {index} >= 0 THEN json_extract(person.json_data, "
+            f"'$.event_ref_list[' || {index} || '].ref') END"
+        )
+        fallback = f"""
+SELECT json_extract(ref.value, '$.ref')
+FROM json_each(person.json_data, '$.event_ref_list') AS ref
+JOIN event AS fallback_event
+  ON fallback_event.handle = json_extract(ref.value, '$.ref'){tree_clause}
+WHERE json_extract(ref.value, '$.role.value') = 1
+  AND json_extract(fallback_event.json_data, '$.type.value') IN ({type_list})
+ORDER BY CAST(ref.key AS integer)
+LIMIT 1
+"""
+    else:
+        indexed = (
+            f"CASE WHEN {index} >= 0 THEN person.json_data::jsonb "
+            f"-> 'event_ref_list' -> {index} ->> 'ref' END"
+        )
+        fallback = f"""
+SELECT ref.value ->> 'ref'
+FROM jsonb_array_elements(
+       COALESCE(person.json_data::jsonb -> 'event_ref_list', '[]'::jsonb)
+     ) WITH ORDINALITY AS ref(value, ordinal)
+JOIN event AS fallback_event
+  ON fallback_event.handle = ref.value ->> 'ref'{tree_clause}
+WHERE (ref.value #>> '{{role,value}}')::integer = 1
+  AND (fallback_event.json_data::jsonb #>> '{{type,value}}')::integer
+      IN ({type_list})
+ORDER BY ref.ordinal
+LIMIT 1
+"""
+    return f"COALESCE({indexed}, ({fallback.strip()}))"
+
+
+def _relationship_graph_rows(
+    basedb: Any, cte: str, params: list[Any], dialect: Any
+) -> list[tuple]:
+    """Fetch all card and edge fields with one projected SQL statement."""
+    if dialect.value == "sqlite":
+
+        def json_value(alias: str, path: str) -> str:
+            return f"json_extract({alias}.json_data, '{path}')"
+
+    else:
+
+        def json_value(alias: str, path: str) -> str:
+            parts = (
+                path.removeprefix("$.")
+                .replace(".", ",")
+                .replace("[", ",")
+                .replace("]", "")
+            )
+            return f"{alias}.json_data::jsonb #> '{{{parts}}}'"
+
+    treeid = _resolve_treeid(basedb)
+    birth_ref = _person_event_ref_sql(dialect, "birth", treeid)
+    death_ref = _person_event_ref_sql(dialect, "death", treeid)
+    tree_join = ""
+    if treeid is not None:
+        tree_join = " AND {event}.treeid = person.treeid"
+    sql = f"""
+{cte}
+SELECT 'person', person.handle, person.gramps_id, person.gender,
+       {json_value("person", "$.primary_name")},
+       {json_value("person", "$.alternate_names")},
+       {json_value("person", "$.media_list[0]")},
+       {json_value("person", "$.family_list")},
+       {json_value("person", "$.parent_family_list[0]")},
+       {json_value("birth_event", "$.date")},
+       {json_value("death_event", "$.date")},
+       NULL, NULL, NULL, NULL, NULL
+FROM person
+JOIN relationship_scope_persons AS scoped ON scoped.handle = person.handle
+LEFT JOIN event AS birth_event ON birth_event.handle = {birth_ref}{tree_join.format(event="birth_event")}
+LEFT JOIN event AS death_event ON death_event.handle = {death_ref}{tree_join.format(event="death_event")}
+UNION ALL
+SELECT 'family', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+       family.handle, family.father_handle, family.mother_handle,
+       {json_value("family", "$.type")},
+       {json_value("family", "$.child_ref_list")}
+FROM family
+JOIN relationship_scope_families AS scoped ON scoped.handle = family.handle
+"""
+    basedb.dbapi.execute(sql, params)
+    return basedb.dbapi.fetchall()
+
+
+def _home_person_projection(db: Any, person: str, locale: Any) -> dict | None:
+    """Fetch one home-person card directly from indexed columns and JSON paths."""
+    basedb = _base_db(db)
+    dialect = _resolve_dialect(basedb)
+    treeid = _resolve_treeid(basedb)
+    if dialect.value == "sqlite":
+
+        def json_value(alias: str, path: str) -> str:
+            return f"json_extract({alias}.json_data, '{path}')"
+
+    else:
+
+        def json_value(alias: str, path: str) -> str:
+            parts = (
+                path.removeprefix("$.")
+                .replace(".", ",")
+                .replace("[", ",")
+                .replace("]", "")
+            )
+            return f"{alias}.json_data::jsonb #> '{{{parts}}}'"
+
+    birth_ref = _person_event_ref_sql(dialect, "birth", treeid)
+    death_ref = _person_event_ref_sql(dialect, "death", treeid)
+    tree_where = ""
+    tree_join = ""
+    params: list[Any] = [person, person]
+    if treeid is not None:
+        tree_where = " AND person.treeid = ?"
+        tree_join = " AND {event}.treeid = person.treeid"
+        params.append(treeid)
+    basedb.dbapi.execute(
+        f"""
+SELECT 'person', person.handle, person.gramps_id, person.gender,
+       {json_value("person", "$.primary_name")},
+       {json_value("person", "$.alternate_names")},
+       {json_value("person", "$.media_list[0]")},
+       {json_value("person", "$.family_list")},
+       {json_value("person", "$.parent_family_list[0]")},
+       {json_value("birth_event", "$.date")},
+       {json_value("death_event", "$.date")},
+       NULL, NULL, NULL, NULL, NULL
+FROM person
+LEFT JOIN event AS birth_event
+  ON birth_event.handle = {birth_ref}{tree_join.format(event="birth_event")}
+LEFT JOIN event AS death_event
+  ON death_event.handle = {death_ref}{tree_join.format(event="death_event")}
+WHERE (person.handle = ? OR person.gramps_id = ?){tree_where}
+LIMIT 1
+""",
+        params,
+    )
+    row = basedb.dbapi.fetchone()
+    if row is None:
+        return None
+    result = _person_graph_projection(row, locale)
+    result.pop("_family_handles")
+    result.pop("_primary_parent_handle")
+    return result
+
+
+def get_home_person_view(db: Any, person: str) -> dict | None:
+    """Return the privacy-safe card projection used for the current user."""
+    locale = get_locale_for_language(None, default=True)
+    if not isinstance(db, ProxyDbBase):
+        return _home_person_projection(db, person, locale)
+    try:
+        item = db.get_person_from_gramps_id(person)
+    except HandleError:
+        item = None
+    if item is None:
+        try:
+            item = db.get_person_from_handle(person)
+        except HandleError:
+            item = None
+    if item is None:
+        return None
+    item.profile = get_person_profile_for_object(db, item, ["self"], locale=locale)
+    return GrampsJSONEncoder().extract_objects(item)
+
+
 class RelationshipGraphViewResource(
     ProtectedResource, PersonResourceHelper, GrampsJSONEncoder
 ):
@@ -179,6 +526,44 @@ class RelationshipGraphViewResource(
     def get(self, args: dict, person: str) -> Response:
         """Return one render-ready relationship graph response."""
         db = get_db_handle()
+        scope = RelationshipScope(
+            person=person,
+            max_degree=args["degree"],
+            direction=args["direction"],
+        )
+        locale = get_locale_for_language(args["locale"], default=True)
+
+        # A privacy proxy can hide nested private values, not just entire DB
+        # rows. Keep that authoritative path for restricted users. Owners can
+        # use a single SQL projection that never hydrates complete Gramps
+        # Person/Event/Family objects merely to draw a card and a line.
+        if not isinstance(db, ProxyDbBase):
+            basedb, cte, params = _scope_sql(db, scope)
+            rows = _relationship_graph_rows(
+                basedb, cte, params, _resolve_dialect(basedb)
+            )
+            people = [
+                _person_graph_projection(row, locale)
+                for row in rows
+                if row[0] == "person"
+            ]
+            if not people:
+                abort_with_message(404, f"Person {person} not found")
+            families = {
+                family["handle"]: family
+                for row in rows
+                if row[0] == "family"
+                for family in [_family_graph_projection(row)]
+            }
+            for item in people:
+                item["family_handles"] = item.pop("_family_handles")
+                item["primary_parent_family_handle"] = item.pop(
+                    "_primary_parent_handle"
+                )
+            return self.response(
+                200, {"people": people, "families": list(families.values())}
+            )
+
         handles = _scope_handles(
             db,
             RelationshipScope(
@@ -190,7 +575,6 @@ class RelationshipGraphViewResource(
         )
         if not handles:
             abort_with_message(404, f"Person {person} not found")
-        locale = get_locale_for_language(args["locale"], default=True)
         people = []
         extension_args = {
             "profile": ["self"],
@@ -213,19 +597,7 @@ class HomePersonViewResource(
     def get(self, person: str) -> Response:
         """Return a home person by handle or Gramps ID without a table scan."""
         db = get_db_handle()
-        try:
-            item = db.get_person_from_gramps_id(person)
-        except HandleError:
-            item = None
-        if item is None:
-            try:
-                item = db.get_person_from_handle(person)
-            except HandleError:
-                item = None
-        if item is None:
-            return self.response(200, {"person": None})
-        item = self.object_extend(item, {"profile": ["self"], "extend": ["media_list"]})
-        return self.response(200, {"person": item})
+        return self.response(200, {"person": get_home_person_view(db, person)})
 
 
 class ConnectionGraphViewResource(

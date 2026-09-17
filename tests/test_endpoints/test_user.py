@@ -237,6 +237,25 @@ class TestUser(unittest.TestCase):
             == {}
         )
 
+    def test_settings_can_include_home_person_card(self):
+        user_id = get_guid("owner")
+        set_user_settings(user_id, {"homePerson": "I42"})
+        details = {"handle": "P42", "gramps_id": "I42"}
+        with patch(
+            "gramps_webapi.api.resources.views.get_home_person_view",
+            return_value=details,
+        ) as projection:
+            response = self.client.get(
+                BASE_URL + "/users/-/settings?include_home_person=1",
+                headers=self._login_header(),
+            )
+        assert response.status_code == 200
+        assert response.json == {
+            "homePerson": "I42",
+            "homePersonDetails": details,
+        }
+        projection.assert_called_once()
+
     def test_match_home_person_preserves_explicit_choices_and_other_settings(self):
         modify_user("user", fullname="Niels Mündler")
         user_id = get_guid("user")

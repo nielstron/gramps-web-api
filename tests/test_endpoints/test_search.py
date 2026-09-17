@@ -214,6 +214,18 @@ class TestSearch(unittest.TestCase):
         self.assertIn("object", rv[0])
         self.assertEqual(rv[0]["object"]["gramps_id"], "I0044")
 
+    def test_person_search_summary_is_a_compact_card_projection(self):
+        """Search cards do not hydrate or return complete Person objects."""
+        rv = check_success(
+            self, TEST_URL + "?query=I0044&type=person&summary=1&locale=en"
+        )
+        self.assertEqual(len(rv), 1)
+        person = rv[0]["object"]
+        self.assertEqual(person["gramps_id"], "I0044")
+        self.assertIn("primary_name", person)
+        self.assertIn("profile", person)
+        self.assertNotIn("event_ref_list", person)
+
     def test_get_search_expected_result_or(self):
         """Test expected result querying for a specific object by Gramps id."""
         rv = check_success(self, TEST_URL + f"?query={quote('I0044 OR I0043')}")
