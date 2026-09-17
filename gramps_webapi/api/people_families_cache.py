@@ -20,7 +20,7 @@
 
 """A proxy database class optionally caching people and families."""
 
-from typing import Generator
+from collections.abc import Generator, Iterable
 
 from gramps.gen.db import DbReadBase
 from gramps.gen.lib import Family, Person
@@ -44,6 +44,14 @@ class CachePeopleFamiliesProxy(ProxyDbBase):
     def cache_families(self) -> None:
         """Cache all families."""
         self._family_cache = {obj.handle: obj for obj in self.db.iter_families()}
+
+    def prime_people(self, people: Iterable[Person]) -> None:
+        """Add an already selected subset of people to the request cache."""
+        self._people_cache.update((obj.handle, obj) for obj in people)
+
+    def prime_families(self, families: Iterable[Family]) -> None:
+        """Add an already selected subset of families to the request cache."""
+        self._family_cache.update((obj.handle, obj) for obj in families)
 
     def get_person_from_handle(self, handle: str) -> Person:
         """Get a person from the cache, memoizing an indexed DB lookup."""

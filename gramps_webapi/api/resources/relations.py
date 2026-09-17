@@ -20,10 +20,13 @@
 
 """Relation API Resource."""
 
+from collections import defaultdict, deque
 from typing import Dict
 
 from flask import Response
 from gramps.gen.errors import HandleError
+from gramps.gen.lib import ChildRef, Family, Person
+from gramps.gen.proxy.proxybase import ProxyDbBase
 from gramps.gen.relationship import get_relationship_calculator
 from marshmallow import Schema
 from webargs import fields, validate
@@ -37,6 +40,7 @@ from ..cache import request_cache_decorator
 from ..util import abort_with_message, get_db_handle, get_locale_for_language
 from . import ProtectedResource
 from .emit import GrampsJSONEncoder
+from .object_query import _resolve_dialect, _resolve_treeid
 from .schemas import (
     RelationshipItemSchema,
     RelationshipPathSchema,
@@ -64,6 +68,147 @@ class RelationQueryArgs(Schema):
     )
 
 
+def _relationship_subset_db(
+    db_handle, person1: Person, person2: Person, depth: int
+) -> CachePeopleFamiliesProxy:
+    """Load the compact parent-edge table with one SQL statement.
+
+    Gramps' relationship calculator retains its exact localized and non-birth
+    relationship semantics, but traverses this bounded in-memory subset rather
+    than issuing one lookup per ancestor or preloading the complete tree.
+    """
+    dialect = _resolve_dialect(db_handle)
+    treeid = _resolve_treeid(db_handle)
+    params = []
+    tree_person = ""
+    tree_family = ""
+    if treeid is not None:
+        tree_person = "WHERE person.treeid = ?"
+        tree_family = " AND family.treeid = person.treeid"
+        params.append(treeid)
+    if dialect.value == "sqlite":
+        parent_families = (
+            "JOIN json_each(person.json_data, '$.parent_family_list') "
+            "AS parent_family"
+        )
+        children = "JOIN json_each(family.json_data, '$.child_ref_list') AS child"
+        family_handle = "parent_family.value"
+        family_index = "CAST(parent_family.key AS integer)"
+        child_handle = "json_extract(child.value, '$.ref')"
+        father_relation = "json_extract(child.value, '$.frel.value')"
+        mother_relation = "json_extract(child.value, '$.mrel.value')"
+    else:
+        parent_families = """
+CROSS JOIN LATERAL jsonb_array_elements_text(
+    COALESCE(person.json_data::jsonb -> 'parent_family_list', '[]'::jsonb)
+) WITH ORDINALITY AS parent_family(value, ordinal)
+""".strip()
+        children = """
+JOIN LATERAL jsonb_array_elements(
+    COALESCE(family.json_data::jsonb -> 'child_ref_list', '[]'::jsonb)
+) AS child(value)
+""".strip()
+        family_handle = "parent_family.value"
+        family_index = "parent_family.ordinal - 1"
+        child_handle = "child.value ->> 'ref'"
+        father_relation = "child.value #>> '{frel,value}'"
+        mother_relation = "child.value #>> '{mrel,value}'"
+    db_handle.dbapi.execute(
+        f"""
+SELECT person.handle, family.handle, {family_index},
+       family.father_handle, family.mother_handle,
+       CAST({father_relation} AS integer), CAST({mother_relation} AS integer)
+FROM person
+{parent_families}
+JOIN family ON family.handle = {family_handle}{tree_family}
+{children} ON {child_handle} = person.handle
+{tree_person}
+ORDER BY person.handle, {family_index}, family.handle
+""",
+        params,
+    )
+    edges_by_child = defaultdict(list)
+    edges_by_family = defaultdict(list)
+    for row in db_handle.dbapi.fetchall():
+        edges_by_child[row[0]].append(row)
+        edges_by_family[row[1]].append(row)
+
+    roots = (person1.handle, person2.handle)
+    reachable = set(roots)
+    family_handles = set()
+    queue = deque((handle, 0) for handle in roots)
+    while queue:
+        handle, distance = queue.popleft()
+        if distance >= depth:
+            continue
+        for edge in edges_by_child.get(handle, ()):
+            family_handles.add(edge[1])
+            for parent_handle in edge[3:5]:
+                if parent_handle and parent_handle not in reachable:
+                    reachable.add(parent_handle)
+                    queue.append((parent_handle, distance + 1))
+
+    people = []
+    for handle in reachable:
+        person = Person()
+        person.set_handle(handle)
+        person.set_parent_family_handle_list(
+            [edge[1] for edge in edges_by_child.get(handle, ())]
+        )
+        people.append(person)
+
+    families = []
+    for handle in family_handles:
+        rows = edges_by_family[handle]
+        family = Family()
+        family.set_handle(handle)
+        family.set_father_handle(rows[0][3] or None)
+        family.set_mother_handle(rows[0][4] or None)
+        for child_handle, _, _, _, _, father_relation, mother_relation in rows:
+            child_ref = ChildRef()
+            child_ref.set_reference_handle(child_handle)
+            child_ref.set_father_relation(father_relation)
+            child_ref.set_mother_relation(mother_relation)
+            family.add_child_ref(child_ref)
+        families.append(family)
+
+    subset = CachePeopleFamiliesProxy(db_handle)
+    subset.prime_people(people)
+    subset.prime_families(families)
+    # Preserve the complete root records for gender, partner families, and
+    # names used in loop diagnostics.
+    subset.prime_people((person1, person2))
+    return subset
+
+
+def _get_one_relationship_scoped(
+    db_handle,
+    handle1: Handle,
+    handle2: Handle,
+    depth: int,
+    locale,
+) -> tuple[str, int, int]:
+    """Calculate a relation from a SQL-selected ancestor subset."""
+
+    def calculate(limit: int) -> tuple[str, int, int]:
+        person1 = db_handle.get_person_from_handle(handle1)
+        person2 = db_handle.get_person_from_handle(handle2)
+        subset = _relationship_subset_db(db_handle, person1, person2, limit)
+        return get_one_relationship(
+            db_handle=subset,
+            person1=subset.get_person_from_handle(handle1),
+            person2=subset.get_person_from_handle(handle2),
+            depth=limit,
+            locale=locale,
+        )
+
+    first_depth = min(depth, 5)
+    result = calculate(first_depth)
+    if depth <= 5 or result[0] or result[1] > -1 or handle1 == handle2:
+        return result
+    return calculate(depth)
+
+
 class RelationResource(ProtectedResource, GrampsJSONEncoder):
     """Relation resource."""
 
@@ -72,7 +217,8 @@ class RelationResource(ProtectedResource, GrampsJSONEncoder):
     @request_cache_decorator
     def get(self, args: Dict, handle1: Handle, handle2: Handle) -> Response:
         """Get the most direct relationship between two people."""
-        db_handle = CachePeopleFamiliesProxy(get_db_handle())
+        db = get_db_handle()
+        db_handle = CachePeopleFamiliesProxy(db)
         try:
             person1 = db_handle.get_person_from_handle(handle1)
         except HandleError:
@@ -83,13 +229,18 @@ class RelationResource(ProtectedResource, GrampsJSONEncoder):
             abort_with_message(404, f"Person {handle2} not found")
 
         locale = get_locale_for_language(args["locale"], default=True)
-        data = get_one_relationship(
-            db_handle=db_handle,
-            person1=person1,
-            person2=person2,
-            depth=args["depth"],
-            locale=locale,
-        )
+        if isinstance(db, ProxyDbBase):
+            data = get_one_relationship(
+                db_handle=db_handle,
+                person1=person1,
+                person2=person2,
+                depth=args["depth"],
+                locale=locale,
+            )
+        else:
+            data = _get_one_relationship_scoped(
+                db, handle1, handle2, args["depth"], locale
+            )
         return self.response(
             200,
             {
