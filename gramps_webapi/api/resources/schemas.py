@@ -411,6 +411,10 @@ class PersonProfileSchema(_Base):
         lambda: FamilyProfileSchema(),
         metadata={"description": "Profile of the primary parent family."},
     )
+    relationship_to = fields.Nested(
+        lambda: RelationshipSchema(),
+        metadata={"description": "Relationship to the requested anchor person."},
+    )
     references = fields.Dict(
         metadata={"description": "References to this person from other objects."},
     )

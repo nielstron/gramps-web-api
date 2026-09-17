@@ -23,9 +23,11 @@
 from typing import Dict
 
 from gramps.gen.const import GRAMPS_LOCALE as glocale
+from gramps.gen.errors import HandleError
 from gramps.gen.lib import Person
 from gramps.gen.utils.grampslocale import GrampsLocale
 
+from ..util import abort_with_message
 from .base import (
     GrampsObjectProtectedResource,
     GrampsObjectResourceHelper,
@@ -36,7 +38,6 @@ from .util import (
     get_family_by_handle,
     get_person_profile_for_object,
 )
-
 
 
 class PersonResourceHelper(GrampsObjectResourceHelper):
@@ -58,6 +59,26 @@ class PersonResourceHelper(GrampsObjectResourceHelper):
                 name_format=args.get("name_format"),
                 precision=args.get("precision", 3),
             )
+            if args.get("relationship_to"):
+                from .relations import get_one_relationship_for_people
+
+                try:
+                    anchor = db_handle.get_person_from_handle(args["relationship_to"])
+                except HandleError:
+                    anchor = None
+                if anchor is None:
+                    abort_with_message(
+                        404,
+                        f"Person {args['relationship_to']} not found",
+                    )
+                relation = get_one_relationship_for_people(
+                    db_handle, anchor, obj, depth=100, locale=locale
+                )
+                obj.profile["relationship_to"] = {
+                    "relationship_string": relation[0],
+                    "distance_common_origin": relation[1],
+                    "distance_common_other": relation[2],
+                }
         if "extend" in args:
             obj.extended = get_extended_attributes(db_handle, obj, args)
             if "all" in args["extend"] or "family_list" in args["extend"]:

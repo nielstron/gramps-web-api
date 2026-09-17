@@ -97,6 +97,23 @@ class TestPeople(unittest.TestCase):
         self.assertEqual(len(rv), 1)
         self.assertEqual(rv[0]["handle"], "GNUJQCL9MD64AM56OH")
 
+    def test_get_people_includes_requested_relationship(self):
+        """A profile can include its relationship without a second request."""
+        rv = check_success(
+            self,
+            TEST_URL
+            + "?handles=ORFKQC4KLWEGTGR19L&profile=self"
+            + "&relationship_to=9BXKQC1PVLPYFMD6IX",
+        )
+        self.assertEqual(
+            rv[0]["profile"]["relationship_to"],
+            {
+                "distance_common_origin": 5,
+                "distance_common_other": 1,
+                "relationship_string": "second great stepgrandaunt",
+            },
+        )
+
     def test_get_people_parameter_handles_expected_result(self):
         """Test handles parameter returns only the requested objects."""
         rv = check_success(self, TEST_URL + "?handles=GNUJQCL9MD64AM56OH,NRLKQCM1UUI9O8AMGQ")

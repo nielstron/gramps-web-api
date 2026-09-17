@@ -113,8 +113,10 @@ JOIN LATERAL jsonb_array_elements(
         child_handle = "child.value ->> 'ref'"
         father_relation = "child.value #>> '{frel,value}'"
         mother_relation = "child.value #>> '{mrel,value}'"
-    db_handle.dbapi.execute(
-        f"""
+    edge_cache = getattr(db_handle, "_grampsweb_relationship_parent_edges", None)
+    if edge_cache is None:
+        db_handle.dbapi.execute(
+            f"""
 SELECT person.handle, family.handle, {family_index},
        family.father_handle, family.mother_handle,
        CAST({father_relation} AS integer), CAST({mother_relation} AS integer)
@@ -125,13 +127,16 @@ JOIN family ON family.handle = {family_handle}{tree_family}
 {tree_person}
 ORDER BY person.handle, {family_index}, family.handle
 """,
-        params,
-    )
-    edges_by_child = defaultdict(list)
-    edges_by_family = defaultdict(list)
-    for row in db_handle.dbapi.fetchall():
-        edges_by_child[row[0]].append(row)
-        edges_by_family[row[1]].append(row)
+            params,
+        )
+        edges_by_child = defaultdict(list)
+        edges_by_family = defaultdict(list)
+        for row in db_handle.dbapi.fetchall():
+            edges_by_child[row[0]].append(row)
+            edges_by_family[row[1]].append(row)
+        edge_cache = (edges_by_child, edges_by_family)
+        setattr(db_handle, "_grampsweb_relationship_parent_edges", edge_cache)
+    edges_by_child, edges_by_family = edge_cache
 
     roots = (person1.handle, person2.handle)
     reachable = set(roots)
@@ -183,30 +188,42 @@ ORDER BY person.handle, {family_index}, family.handle
 
 def _get_one_relationship_scoped(
     db_handle,
-    handle1: Handle,
-    handle2: Handle,
+    person1: Person,
+    person2: Person,
     depth: int,
     locale,
 ) -> tuple[str, int, int]:
     """Calculate a relation from a SQL-selected ancestor subset."""
 
     def calculate(limit: int) -> tuple[str, int, int]:
-        person1 = db_handle.get_person_from_handle(handle1)
-        person2 = db_handle.get_person_from_handle(handle2)
         subset = _relationship_subset_db(db_handle, person1, person2, limit)
         return get_one_relationship(
             db_handle=subset,
-            person1=subset.get_person_from_handle(handle1),
-            person2=subset.get_person_from_handle(handle2),
+            person1=subset.get_person_from_handle(person1.handle),
+            person2=subset.get_person_from_handle(person2.handle),
             depth=limit,
             locale=locale,
         )
 
     first_depth = min(depth, 5)
     result = calculate(first_depth)
-    if depth <= 5 or result[0] or result[1] > -1 or handle1 == handle2:
+    if depth <= 5 or result[0] or result[1] > -1 or person1.handle == person2.handle:
         return result
     return calculate(depth)
+
+
+def get_one_relationship_for_people(
+    db_handle,
+    person1: Person,
+    person2: Person,
+    depth: int,
+    locale,
+) -> tuple[str, int, int]:
+    """Calculate one relationship without opening or scanning another DB."""
+    if isinstance(db_handle, ProxyDbBase):
+        proxy = CachePeopleFamiliesProxy(db_handle)
+        return get_one_relationship(proxy, person1, person2, depth, locale)
+    return _get_one_relationship_scoped(db_handle, person1, person2, depth, locale)
 
 
 class RelationResource(ProtectedResource, GrampsJSONEncoder):
@@ -229,18 +246,9 @@ class RelationResource(ProtectedResource, GrampsJSONEncoder):
             abort_with_message(404, f"Person {handle2} not found")
 
         locale = get_locale_for_language(args["locale"], default=True)
-        if isinstance(db, ProxyDbBase):
-            data = get_one_relationship(
-                db_handle=db_handle,
-                person1=person1,
-                person2=person2,
-                depth=args["depth"],
-                locale=locale,
-            )
-        else:
-            data = _get_one_relationship_scoped(
-                db, handle1, handle2, args["depth"], locale
-            )
+        data = get_one_relationship_for_people(
+            db, person1, person2, args["depth"], locale
+        )
         return self.response(
             200,
             {

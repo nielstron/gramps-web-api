@@ -290,6 +290,12 @@ class GrampsObjectQueryArgs(Schema):
             "description": "Comma-delimited list of profile sections to include. 'self': name/sex/birth/death; 'families': family summaries; 'events': event list; 'age': age at events; 'span': elapsed time; 'ratings': citation count and confidence; 'references': referring objects; 'participants': event participants (people and families). Use 'all' for everything."
         },
     )
+    relationship_to = fields.Str(
+        validate=validate.Length(min=1),
+        metadata={
+            "description": "For person records, include the relationship to this person handle in the profile."
+        },
+    )
     skipkeys = fields.DelimitedList(
         fields.Str(validate=validate.Length(min=1)),
         metadata={
@@ -400,7 +406,7 @@ class GrampsObjectResource(GrampsObjectResourceHelper, Resource):
         with DbTxn(f"Edit {self.gramps_class_name}", db_handle) as trans:
             try:
                 update_object(db_handle, obj, trans)
-            except ValueError as exc:
+            except ValueError:
                 abort_with_message(400, "Error while updating object")
             trans_dict = transaction_to_json(trans)
         # update search index
@@ -557,6 +563,12 @@ class GrampsObjectsQueryArgs(Schema):
         ),
         metadata={
             "description": "Comma-delimited list of profile sections to include. 'self': name/sex/birth/death; 'families': family summaries; 'events': event list; 'age': age at events; 'span': elapsed time; 'ratings': citation count and confidence; 'references': referring objects; 'participants': event participants (people and families). Use 'all' for everything."
+        },
+    )
+    relationship_to = fields.Str(
+        validate=validate.Length(min=1),
+        metadata={
+            "description": "For person records, include the relationship to this person handle in each profile."
         },
     )
     rules = fields.Str(
