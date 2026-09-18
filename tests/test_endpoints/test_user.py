@@ -30,6 +30,7 @@ from celery.result import AsyncResult
 from gramps.cli.clidbman import CLIDbManager
 from gramps.gen.dbstate import DbState
 
+from gramps_webapi.api.resources.invitations import _match_invited_home_person
 from gramps_webapi.api.tasks import send_email_invitation
 from gramps_webapi.app import create_app
 from gramps_webapi.auth import (
@@ -43,6 +44,7 @@ from gramps_webapi.auth import (
     get_number_users,
     get_user_details,
     get_user_oidc_accounts,
+    get_user_settings,
     modify_user,
     set_tree_config,
     set_user_settings,
@@ -175,12 +177,18 @@ class TestUser(unittest.TestCase):
         )
         token = task.call_args.kwargs["token"]
         invitation_header = {"Authorization": f"Bearer {token}"}
-        response = self.client.post(
-            BASE_URL + "/users/-/invite/",
-            headers=invitation_header,
-            json={"full_name": "Invited Person"},
-        )
+        with patch(
+            "gramps_webapi.api.resources.invitations._match_invited_home_person",
+            return_value="I0042",
+        ) as match_home_person:
+            response = self.client.post(
+                BASE_URL + "/users/-/invite/",
+                headers=invitation_header,
+                json={"full_name": "Invited Person"},
+            )
         assert response.status_code == 201, response.text
+        match_home_person.assert_called_once()
+        assert match_home_person.call_args.args[1] == "Invited Person"
         assert response.json["access_token"]
         assert response.json["refresh_token"]
         access_token = response.json["access_token"]
@@ -189,6 +197,9 @@ class TestUser(unittest.TestCase):
         assert details["full_name"] == "Invited Person"
         assert details["role"] == ROLE_MEMBER
         assert details["tree"] == self.tree
+        assert get_user_settings(str(get_guid("invited@example.com"))) == {
+            "homePerson": "I0042"
+        }
         own_details = self.client.get(
             BASE_URL + "/users/-/",
             headers={"Authorization": f"Bearer {access_token}"},
@@ -229,6 +240,16 @@ class TestUser(unittest.TestCase):
                 json={"full_name": "Replay"},
             ).status_code
             == 409
+        )
+
+    def test_invitation_home_person_match_can_return_empty(self):
+        invitation = MagicMock(tree=self.tree, role=ROLE_MEMBER)
+
+        assert (
+            _match_invited_home_person(
+                invitation, "Person Missing From Tree", get_guid("user")
+            )
+            is None
         )
 
     def test_magic_login_is_rotated_and_single_use(self):

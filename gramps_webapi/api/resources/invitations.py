@@ -21,6 +21,8 @@ from ...auth.const import (
     PERM_MAKE_ADMIN,
     PERM_VIEW_OTHER_TREE_USER,
     PERM_VIEW_OTHER_USER,
+    PERM_VIEW_PRIVATE,
+    PERMISSIONS,
     ROLE_ADMIN,
     SCOPE_ACCEPT_INVITATION,
 )
@@ -28,9 +30,17 @@ from ...auth.passwords import PASSWORD_DISABLED
 from ...const import TREE_MULTI
 from ..auth import has_permissions, require_permissions
 from ..blueprint import api_blueprint
+from ..home_person import find_home_person
 from ..ratelimiter import limiter
 from ..tasks import run_task, send_email_invitation
-from ..util import abort_with_message, get_config, get_tree_from_jwt, tree_exists
+from ..util import (
+    abort_with_message,
+    close_db,
+    get_config,
+    get_db_outside_request,
+    get_tree_from_jwt,
+    tree_exists,
+)
 from . import LimitedScopeProtectedResource, ProtectedResource
 from .token import get_tokens, get_tree_id_and_permissions
 
@@ -56,6 +66,26 @@ def _existing_email(email, tree):
         .first()
         is not None
     )
+
+
+def _match_invited_home_person(invitation, full_name, user_id):
+    """Match the submitted name exactly once, while accepting the invitation."""
+    if not invitation.tree:
+        return None
+    db = get_db_outside_request(
+        tree=invitation.tree,
+        view_private=PERM_VIEW_PRIVATE in PERMISSIONS[invitation.role],
+        readonly=True,
+        user_id=str(user_id),
+    )
+    try:
+        return find_home_person(
+            full_name,
+            db.iter_people(),
+            view_private=PERM_VIEW_PRIVATE in PERMISSIONS[invitation.role],
+        )
+    finally:
+        close_db(db)
 
 
 def _send_invitation(invitation):
@@ -243,14 +273,17 @@ class UserAcceptInvitationResource(LimitedScopeProtectedResource):
             abort_with_message(
                 409, "A user with this email already exists in this tree"
             )
+        user_id = uuid.uuid4()
+        home_person = _match_invited_home_person(invitation, full_name, user_id)
         user = User(
-            id=uuid.uuid4(),
+            id=user_id,
             name=name,
             fullname=full_name,
             email=invitation.email,
             role=invitation.role,
             tree=invitation.tree,
             pwhash=PASSWORD_DISABLED,
+            settings={"homePerson": home_person} if home_person else None,
         )
         # Consume the current secret and create the account in one transaction.
         consumed = user_db.session.execute(
