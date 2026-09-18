@@ -24,7 +24,8 @@ def _database() -> sqlite3.Connection:
     db = sqlite3.connect(":memory:")
     db.executescript("""
         CREATE TABLE person (
-            handle TEXT PRIMARY KEY, gramps_id TEXT, private INTEGER
+            handle TEXT PRIMARY KEY, gramps_id TEXT, json_data TEXT,
+            private INTEGER
         );
         CREATE TABLE family (
             handle TEXT PRIMARY KEY, father_handle TEXT, mother_handle TEXT,
@@ -38,9 +39,26 @@ def _database() -> sqlite3.Connection:
         );
         """)
     db.executemany(
-        "INSERT INTO person VALUES (?, ?, ?)",
+        "INSERT INTO person VALUES (?, ?, ?, ?)",
         [
-            (handle, handle, private)
+            (
+                handle,
+                handle,
+                json.dumps(
+                    {
+                        "event_ref_list": (
+                            [
+                                {"ref": "person-event", "private": False},
+                                {"ref": "private-event", "private": False},
+                                {"ref": "hidden-person-event", "private": True},
+                            ]
+                            if handle == "A"
+                            else []
+                        )
+                    }
+                ),
+                private,
+            )
             for handle, private in [
                 ("A", 0),
                 ("B", 0),
@@ -57,7 +75,19 @@ def _database() -> sqlite3.Connection:
             handle,
             father,
             mother,
-            json.dumps({"child_ref_list": [{"ref": child} for child in children]}),
+            json.dumps(
+                {
+                    "child_ref_list": [{"ref": child} for child in children],
+                    "event_ref_list": (
+                        [
+                            {"ref": "family-event", "private": False},
+                            {"ref": "hidden-family-event", "private": True},
+                        ]
+                        if handle == "couple"
+                        else []
+                    ),
+                }
+            ),
             private,
         )
 
@@ -71,7 +101,13 @@ def _database() -> sqlite3.Connection:
     )
     db.executemany(
         "INSERT INTO event VALUES (?, ?)",
-        [("person-event", 0), ("family-event", 0), ("private-event", 1)],
+        [
+            ("person-event", 0),
+            ("family-event", 0),
+            ("private-event", 1),
+            ("hidden-person-event", 0),
+            ("hidden-family-event", 0),
+        ],
     )
     db.executemany(
         "INSERT INTO reference VALUES (?, ?, ?, ?)",
@@ -79,6 +115,8 @@ def _database() -> sqlite3.Connection:
             ("A", "Person", "person-event", "Event"),
             ("couple", "Family", "family-event", "Event"),
             ("A", "Person", "private-event", "Event"),
+            ("A", "Person", "hidden-person-event", "Event"),
+            ("couple", "Family", "hidden-family-event", "Event"),
         ],
     )
     return db
@@ -125,6 +163,8 @@ def test_relationship_degree_and_shared_relations():
         "person-event",
         "family-event",
         "private-event",
+        "hidden-person-event",
+        "hidden-family-event",
     }
 
 
@@ -145,6 +185,12 @@ def test_direction_and_privacy_are_applied_inside_the_recursion():
         db, RelationshipScope("A", 0), "families", False
     )
     assert "private-event" not in _handles(
+        db, RelationshipScope("A", 0), "events", False
+    )
+    assert "hidden-person-event" not in _handles(
+        db, RelationshipScope("A", 0), "events", False
+    )
+    assert "hidden-family-event" not in _handles(
         db, RelationshipScope("A", 0), "events", False
     )
 

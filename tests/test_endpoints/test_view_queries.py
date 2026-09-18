@@ -50,6 +50,30 @@ class TestRelationshipGraphView(unittest.TestCase):
             },
         )
 
+    def test_guest_uses_the_same_compact_projection(self):
+        result = check_success(
+            self,
+            f"{VIEWS_URL}relationship-graph/{PERSON1}?degree=1&locale=de",
+            role=ROLE_GUEST,
+        )
+        person = next(item for item in result["people"] if item["handle"] == PERSON1)
+        self.assertIn("families", result)
+        self.assertIn("family_handles", person)
+        self.assertNotIn("event_ref_list", person)
+        self.assertEqual(
+            set(person),
+            {
+                "handle",
+                "gramps_id",
+                "primary_name",
+                "alternate_names",
+                "media_list",
+                "profile",
+                "family_handles",
+                "primary_parent_family_handle",
+            },
+        )
+
 
 class TestConnectionGraphView(unittest.TestCase):
     """A connection graph combines path, people, and families."""
@@ -66,6 +90,55 @@ class TestConnectionGraphView(unittest.TestCase):
             {person["handle"] for person in result["people"]}, {PERSON1, PERSON2}
         )
         self.assertEqual(len(result["families"]), 1)
+
+    def test_guest_receives_compact_connection_objects(self):
+        result = check_success(
+            self,
+            f"{VIEWS_URL}connection-graph/{PERSON1}/{PERSON2}?locale=de",
+            role=ROLE_GUEST,
+        )
+        self.assertTrue(result["path"]["connected"])
+        self.assertTrue(result["people"])
+        self.assertNotIn("event_ref_list", result["people"][0])
+        self.assertIn("profile", result["people"][0])
+
+
+class TestHomePersonView(unittest.TestCase):
+    """Home-person cards use their indexed projection for every role."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.client = get_test_client()
+
+    def test_guest_receives_compact_home_person(self):
+        result = check_success(
+            self, f"{VIEWS_URL}home-person/{PERSON1}", role=ROLE_GUEST
+        )
+        self.assertEqual(result["person"]["handle"], PERSON1)
+        self.assertNotIn("event_ref_list", result["person"])
+        self.assertIn("profile", result["person"])
+
+
+class TestMapScopeView(unittest.TestCase):
+    """Map scopes remain SQL-projected for restricted viewers."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.client = get_test_client()
+
+    def test_guest_receives_projected_map_scope(self):
+        result = check_success(
+            self,
+            f"{VIEWS_URL}map-scope/{PERSON1}?degree=1&locale=de",
+            role=ROLE_GUEST,
+        )
+        self.assertTrue(result["people"])
+        self.assertTrue(result["families"])
+        self.assertTrue(result["events"])
+        self.assertLessEqual(
+            set(result["people"][0]),
+            {"handle", "event_ref_list", "birth_ref_index", "family_list"},
+        )
 
 
 class TestAnniversariesView(unittest.TestCase):
@@ -158,6 +231,16 @@ class TestObjectSummariesView(unittest.TestCase):
             f"{VIEWS_URL}object-summaries?objects=person:{person['object']['gramps_id']},person:missing&locale=en",
         )
         self.assertEqual([item["handle"] for item in by_id], [PERSON1])
+
+    def test_guest_receives_the_fast_person_card_projection(self):
+        result = check_success(
+            self,
+            f"{VIEWS_URL}object-summaries?objects=person:{PERSON1}&locale=de",
+            role=ROLE_GUEST,
+        )
+        self.assertEqual(len(result), 1)
+        self.assertIn("profile", result[0]["object"])
+        self.assertIn("birth", result[0]["object"]["profile"])
 
     def test_guest_and_member_can_resolve_tag(self):
         for role in (ROLE_GUEST, ROLE_MEMBER):

@@ -8,8 +8,7 @@ from datetime import date
 from typing import Any
 
 from flask import Response
-from gramps.gen.errors import HandleError
-from gramps.gen.lib.json_utils import data_to_object, object_to_dict
+from gramps.gen.lib.json_utils import data_to_object
 from gramps.gen.proxy.proxybase import ProxyDbBase
 from marshmallow import Schema, validate
 from webargs import fields
@@ -18,12 +17,10 @@ from ...auth.const import PERM_VIEW_PRIVATE
 from ..auth import has_permissions
 from ..blueprint import api_blueprint
 from ..cache import request_cache_decorator
-from ..relation_path import _step_relationship_type
 from ..util import abort_with_message, get_db_handle, get_locale_for_language
 from . import ProtectedResource
 from .emit import GrampsJSONEncoder
 from .object_query import _resolve_dialect, _resolve_treeid
-from .people import PersonResourceHelper
 from .relationship_scope import (
     RelationshipScope,
     compile_connection_path_query,
@@ -39,7 +36,6 @@ from .schemas import (
 from .util import (
     display_date,
     get_event_profile_for_object,
-    get_person_profile_for_object,
 )
 
 VIEW_OBJECT_TYPES = (
@@ -158,14 +154,6 @@ def _scope_sql(db: Any, scope: RelationshipScope) -> tuple[Any, str, list[Any]]:
     return basedb, sql, params
 
 
-def _scope_handles(db: Any, scope: RelationshipScope, relation: str) -> list[str]:
-    basedb, cte, params = _scope_sql(db, scope)
-    basedb.dbapi.execute(
-        f"{cte}\nSELECT handle FROM relationship_scope_{relation}", params
-    )
-    return [row[0] for row in basedb.dbapi.fetchall()]
-
-
 def _type_projection(value: Any) -> Any:
     """Keep only the enum fields used by map relationship helpers."""
     if not isinstance(value, dict):
@@ -176,19 +164,34 @@ def _type_projection(value: Any) -> Any:
 def _map_projection(object_type: str, item: dict) -> dict:
     """Project raw Gramps JSON to the fields needed by map trajectories."""
     if object_type == "person":
+        raw_refs = item.get("event_ref_list", [])
+        refs = [
+            {"ref": ref.get("ref")}
+            for ref in raw_refs
+            if not ref.get("private") and ref.get("ref")
+        ]
+        birth_index = item.get("birth_ref_index")
+        birth_ref = (
+            raw_refs[birth_index].get("ref")
+            if isinstance(birth_index, int) and 0 <= birth_index < len(raw_refs)
+            else None
+        )
         return {
             "handle": item.get("handle"),
-            "event_ref_list": [
-                {"ref": ref.get("ref")} for ref in item.get("event_ref_list", [])
-            ],
-            "birth_ref_index": item.get("birth_ref_index"),
+            "event_ref_list": refs,
+            "birth_ref_index": next(
+                (index for index, ref in enumerate(refs) if ref["ref"] == birth_ref),
+                -1,
+            ),
             "family_list": item.get("family_list", []),
         }
     if object_type == "family":
         return {
             "handle": item.get("handle"),
             "event_ref_list": [
-                {"ref": ref.get("ref")} for ref in item.get("event_ref_list", [])
+                {"ref": ref.get("ref")}
+                for ref in item.get("event_ref_list", [])
+                if not ref.get("private") and ref.get("ref")
             ],
             "father_handle": item.get("father_handle"),
             "mother_handle": item.get("mother_handle"),
@@ -199,6 +202,7 @@ def _map_projection(object_type: str, item: dict) -> dict:
                     "mrel": _type_projection(ref.get("mrel")),
                 }
                 for ref in item.get("child_ref_list", [])
+                if not ref.get("private") and ref.get("ref")
             ],
         }
     date_value = item.get("date") or {}
@@ -509,6 +513,19 @@ def _person_graph_projection(row: tuple, locale: Any) -> dict:
 def _family_graph_projection(row: tuple) -> dict:
     """Build the compact family shape consumed by relationship edges."""
     handle, father, mother, type_raw, children_raw = row[11:]
+    return _family_graph_projection_values(
+        handle, father, mother, type_raw, children_raw
+    )
+
+
+def _family_graph_projection_values(
+    handle: str,
+    father: str | None,
+    mother: str | None,
+    type_raw: Any,
+    children_raw: Any,
+) -> dict:
+    """Build one compact family from SQL columns or a stored JSON record."""
     child_types = {
         0: "None",
         1: "Birth",
@@ -549,7 +566,63 @@ def _family_graph_projection(row: tuple) -> dict:
     }
 
 
-def _person_event_ref_sql(dialect: Any, kind: str, treeid: Any) -> str:
+def _family_graph_projection_from_item(item: dict) -> dict:
+    return _family_graph_projection_values(
+        item.get("handle"),
+        item.get("father_handle"),
+        item.get("mother_handle"),
+        item.get("type"),
+        item.get("child_ref_list"),
+    )
+
+
+def _projected_step_relationship_type(
+    family: dict, from_handle: str, to_handle: str, relation: str
+) -> str:
+    """Return the edge label without hydrating a Gramps Family object."""
+    if relation == "partner":
+        return family["type"]
+    child_handle = to_handle if relation == "child" else from_handle
+    child = next(ref for ref in family["child_ref_list"] if ref["ref"] == child_handle)
+    if relation in {"child", "parent"}:
+        parent_handle = from_handle if relation == "child" else to_handle
+        if parent_handle == family["father_handle"]:
+            return child["frel"]
+        if parent_handle == family["mother_handle"]:
+            return child["mrel"]
+        raise ValueError("Parent-child path step has no matching family parent")
+    if relation == "sibling":
+        other_handle = from_handle if child_handle == to_handle else to_handle
+        other = next(
+            ref for ref in family["child_ref_list"] if ref["ref"] == other_handle
+        )
+        rank = {
+            "Birth": 0,
+            "Adopted": 1,
+            "Stepchild": 2,
+            "Foster": 3,
+            "Sponsored": 4,
+            "Other": 5,
+            "Custom": 5,
+            "None": 6,
+            "Unknown": 6,
+        }
+        candidates = []
+        if family["father_handle"]:
+            candidates.append((child["frel"], other["frel"]))
+        if family["mother_handle"]:
+            candidates.append((child["mrel"], other["mrel"]))
+        return min(
+            (max(pair, key=lambda value: rank.get(value, 5)) for pair in candidates),
+            key=lambda value: rank.get(value, 5),
+            default="Unknown",
+        )
+    raise ValueError(f"Unsupported path relation: {relation}")
+
+
+def _person_event_ref_sql(
+    dialect: Any, kind: str, treeid: Any, *, include_private: bool
+) -> str:
     """Select a preferred birth/death ref, including Gramps' fallbacks."""
     index = f"person.{kind}_ref_index"
     fallback_types = {
@@ -560,25 +633,50 @@ def _person_event_ref_sql(dialect: Any, kind: str, treeid: Any) -> str:
     tree_clause = (
         " AND fallback_event.treeid = person.treeid" if treeid is not None else ""
     )
+    privacy_clause = "" if include_private else " AND fallback_event.private = 0"
     if dialect.value == "sqlite":
+        indexed_privacy = (
+            ""
+            if include_private
+            else " AND COALESCE(json_extract(person.json_data, "
+            f"'$.event_ref_list[' || {index} || '].private'), 0) = 0"
+        )
         indexed = (
-            f"CASE WHEN {index} >= 0 THEN json_extract(person.json_data, "
+            f"CASE WHEN {index} >= 0{indexed_privacy} THEN "
+            "json_extract(person.json_data, "
             f"'$.event_ref_list[' || {index} || '].ref') END"
+        )
+        ref_privacy = (
+            ""
+            if include_private
+            else " AND COALESCE(json_extract(ref.value, '$.private'), 0) = 0"
         )
         fallback = f"""
 SELECT json_extract(ref.value, '$.ref')
 FROM json_each(person.json_data, '$.event_ref_list') AS ref
 JOIN event AS fallback_event
-  ON fallback_event.handle = json_extract(ref.value, '$.ref'){tree_clause}
+  ON fallback_event.handle = json_extract(ref.value, '$.ref'){tree_clause}{privacy_clause}
 WHERE json_extract(ref.value, '$.role.value') = 1
+  {ref_privacy}
   AND json_extract(fallback_event.json_data, '$.type.value') IN ({type_list})
 ORDER BY CAST(ref.key AS integer)
 LIMIT 1
 """
     else:
+        indexed_privacy = (
+            ""
+            if include_private
+            else " AND NOT COALESCE((person.json_data::jsonb -> "
+            f"'event_ref_list' -> {index} ->> 'private')::boolean, false)"
+        )
         indexed = (
-            f"CASE WHEN {index} >= 0 THEN person.json_data::jsonb "
+            f"CASE WHEN {index} >= 0{indexed_privacy} THEN person.json_data::jsonb "
             f"-> 'event_ref_list' -> {index} ->> 'ref' END"
+        )
+        ref_privacy = (
+            ""
+            if include_private
+            else " AND NOT COALESCE((ref.value ->> 'private')::boolean, false)"
         )
         fallback = f"""
 SELECT ref.value ->> 'ref'
@@ -586,8 +684,9 @@ FROM jsonb_array_elements(
        COALESCE(person.json_data::jsonb -> 'event_ref_list', '[]'::jsonb)
      ) WITH ORDINALITY AS ref(value, ordinal)
 JOIN event AS fallback_event
-  ON fallback_event.handle = ref.value ->> 'ref'{tree_clause}
+  ON fallback_event.handle = ref.value ->> 'ref'{tree_clause}{privacy_clause}
 WHERE (ref.value #>> '{{role,value}}')::integer = 1
+  {ref_privacy}
   AND (fallback_event.json_data::jsonb #>> '{{type,value}}')::integer
       IN ({type_list})
 ORDER BY ref.ordinal
@@ -600,11 +699,12 @@ def get_person_card_summaries(
     db: Any, handles: list[str], locale: Any
 ) -> dict[str, dict]:
     """Fetch the fields used by person picker/search cards in one SQL query."""
-    if not handles or isinstance(db, ProxyDbBase):
+    if not handles:
         return {}
     basedb = _base_db(db)
     dialect = _resolve_dialect(basedb)
     treeid = _resolve_treeid(basedb)
+    include_private = has_permissions({PERM_VIEW_PRIVATE})
     placeholders = ", ".join("?" for _ in handles)
     params: list[Any] = list(handles)
     if dialect.value == "sqlite":
@@ -615,7 +715,9 @@ def get_person_card_summaries(
         primary = "person.json_data::jsonb -> 'primary_name'"
         birth_date = "birth_event.json_data::jsonb -> 'date'"
         place_name = "place.json_data::jsonb #>> '{name,value}'"
-    birth_ref = _person_event_ref_sql(dialect, "birth", treeid)
+    birth_ref = _person_event_ref_sql(
+        dialect, "birth", treeid, include_private=include_private
+    )
     tree_person = ""
     tree_event = ""
     tree_place = ""
@@ -624,16 +726,19 @@ def get_person_card_summaries(
         params.append(treeid)
         tree_event = " AND birth_event.treeid = person.treeid"
         tree_place = " AND place.treeid = person.treeid"
+    privacy_person = "" if include_private else " AND person.private = 0"
+    privacy_event = "" if include_private else " AND birth_event.private = 0"
+    privacy_place = "" if include_private else " AND place.private = 0"
     basedb.dbapi.execute(
         f"""
 SELECT person.handle, person.gramps_id, person.gender, person.change,
        {primary}, {birth_date}, {place_name}
 FROM person
 LEFT JOIN event AS birth_event
-  ON birth_event.handle = {birth_ref}{tree_event}
+  ON birth_event.handle = {birth_ref}{tree_event}{privacy_event}
 LEFT JOIN place
-  ON place.handle = birth_event.place{tree_place}
-WHERE person.handle IN ({placeholders}){tree_person}
+  ON place.handle = birth_event.place{tree_place}{privacy_place}
+WHERE person.handle IN ({placeholders}){tree_person}{privacy_person}
 """,
         params,
     )
@@ -750,7 +855,12 @@ def get_object_summaries_view(
 
 
 def _relationship_graph_rows(
-    basedb: Any, cte: str, params: list[Any], dialect: Any
+    basedb: Any,
+    cte: str,
+    params: list[Any],
+    dialect: Any,
+    *,
+    include_private: bool,
 ) -> list[tuple]:
     """Fetch all card and edge fields with one projected SQL statement."""
     if dialect.value == "sqlite":
@@ -770,11 +880,16 @@ def _relationship_graph_rows(
             return f"{alias}.json_data::jsonb #> '{{{parts}}}'"
 
     treeid = _resolve_treeid(basedb)
-    birth_ref = _person_event_ref_sql(dialect, "birth", treeid)
-    death_ref = _person_event_ref_sql(dialect, "death", treeid)
+    birth_ref = _person_event_ref_sql(
+        dialect, "birth", treeid, include_private=include_private
+    )
+    death_ref = _person_event_ref_sql(
+        dialect, "death", treeid, include_private=include_private
+    )
     tree_join = ""
     if treeid is not None:
         tree_join = " AND {event}.treeid = person.treeid"
+    event_privacy = "" if include_private else " AND {event}.private = 0"
     sql = f"""
 {cte}
 SELECT 'person', person.handle, person.gramps_id, person.gender,
@@ -788,8 +903,8 @@ SELECT 'person', person.handle, person.gramps_id, person.gender,
        NULL, NULL, NULL, NULL, NULL
 FROM person
 JOIN relationship_scope_persons AS scoped ON scoped.handle = person.handle
-LEFT JOIN event AS birth_event ON birth_event.handle = {birth_ref}{tree_join.format(event="birth_event")}
-LEFT JOIN event AS death_event ON death_event.handle = {death_ref}{tree_join.format(event="death_event")}
+LEFT JOIN event AS birth_event ON birth_event.handle = {birth_ref}{tree_join.format(event="birth_event")}{event_privacy.format(event="birth_event")}
+LEFT JOIN event AS death_event ON death_event.handle = {death_ref}{tree_join.format(event="death_event")}{event_privacy.format(event="death_event")}
 UNION ALL
 SELECT 'family', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
        family.handle, family.father_handle, family.mother_handle,
@@ -802,7 +917,48 @@ JOIN relationship_scope_families AS scoped ON scoped.handle = family.handle
     return basedb.dbapi.fetchall()
 
 
-def _home_person_projection(db: Any, person: str, locale: Any) -> dict | None:
+def _selected_graph_rows(
+    db: Any,
+    person_handles: list[str],
+    family_handles: list[str],
+    *,
+    include_private: bool,
+) -> list[tuple]:
+    """Fetch compact graph projections for two already selected handle sets."""
+    basedb = _base_db(db)
+    treeid = _resolve_treeid(basedb)
+
+    def relation(table: str, handles: list[str]) -> tuple[str, list[Any]]:
+        if not handles:
+            return f"SELECT handle FROM {table} WHERE 1 = 0", []
+        placeholders = ", ".join("?" for _ in handles)
+        filters = [f"handle IN ({placeholders})"]
+        params: list[Any] = list(handles)
+        if treeid is not None:
+            filters.append("treeid = ?")
+            params.append(treeid)
+        if not include_private:
+            filters.append("private = 0")
+        return f"SELECT handle FROM {table} WHERE {' AND '.join(filters)}", params
+
+    people_sql, people_params = relation("person", person_handles)
+    families_sql, family_params = relation("family", family_handles)
+    cte = f"""
+WITH relationship_scope_persons AS ({people_sql}),
+relationship_scope_families AS ({families_sql})
+""".strip()
+    return _relationship_graph_rows(
+        basedb,
+        cte,
+        people_params + family_params,
+        _resolve_dialect(basedb),
+        include_private=include_private,
+    )
+
+
+def _home_person_projection(
+    db: Any, person: str, locale: Any, *, include_private: bool
+) -> dict | None:
     """Fetch one home-person card directly from indexed columns and JSON paths."""
     basedb = _base_db(db)
     dialect = _resolve_dialect(basedb)
@@ -823,8 +979,12 @@ def _home_person_projection(db: Any, person: str, locale: Any) -> dict | None:
             )
             return f"{alias}.json_data::jsonb #> '{{{parts}}}'"
 
-    birth_ref = _person_event_ref_sql(dialect, "birth", treeid)
-    death_ref = _person_event_ref_sql(dialect, "death", treeid)
+    birth_ref = _person_event_ref_sql(
+        dialect, "birth", treeid, include_private=include_private
+    )
+    death_ref = _person_event_ref_sql(
+        dialect, "death", treeid, include_private=include_private
+    )
     tree_where = ""
     tree_join = ""
     params: list[Any] = [person, person]
@@ -832,6 +992,8 @@ def _home_person_projection(db: Any, person: str, locale: Any) -> dict | None:
         tree_where = " AND person.treeid = ?"
         tree_join = " AND {event}.treeid = person.treeid"
         params.append(treeid)
+    person_privacy = "" if include_private else " AND person.private = 0"
+    event_privacy = "" if include_private else " AND {event}.private = 0"
     basedb.dbapi.execute(
         f"""
 SELECT 'person', person.handle, person.gramps_id, person.gender,
@@ -845,10 +1007,10 @@ SELECT 'person', person.handle, person.gramps_id, person.gender,
        NULL, NULL, NULL, NULL, NULL
 FROM person
 LEFT JOIN event AS birth_event
-  ON birth_event.handle = {birth_ref}{tree_join.format(event="birth_event")}
+  ON birth_event.handle = {birth_ref}{tree_join.format(event="birth_event")}{event_privacy.format(event="birth_event")}
 LEFT JOIN event AS death_event
-  ON death_event.handle = {death_ref}{tree_join.format(event="death_event")}
-WHERE (person.handle = ? OR person.gramps_id = ?){tree_where}
+  ON death_event.handle = {death_ref}{tree_join.format(event="death_event")}{event_privacy.format(event="death_event")}
+WHERE (person.handle = ? OR person.gramps_id = ?){tree_where}{person_privacy}
 LIMIT 1
 """,
         params,
@@ -865,26 +1027,15 @@ LIMIT 1
 def get_home_person_view(db: Any, person: str) -> dict | None:
     """Return the privacy-safe card projection used for the current user."""
     locale = get_locale_for_language(None, default=True)
-    if not isinstance(db, ProxyDbBase):
-        return _home_person_projection(db, person, locale)
-    try:
-        item = db.get_person_from_gramps_id(person)
-    except HandleError:
-        item = None
-    if item is None:
-        try:
-            item = db.get_person_from_handle(person)
-        except HandleError:
-            item = None
-    if item is None:
-        return None
-    item.profile = get_person_profile_for_object(db, item, ["self"], locale=locale)
-    return GrampsJSONEncoder().extract_objects(item)
+    return _home_person_projection(
+        db,
+        person,
+        locale,
+        include_private=has_permissions({PERM_VIEW_PRIVATE}),
+    )
 
 
-class RelationshipGraphViewResource(
-    ProtectedResource, PersonResourceHelper, GrampsJSONEncoder
-):
+class RelationshipGraphViewResource(ProtectedResource, GrampsJSONEncoder):
     """People and family extensions for one bounded relationship graph."""
 
     @api_blueprint.response(200, RelationshipGraphResponse())
@@ -900,63 +1051,52 @@ class RelationshipGraphViewResource(
         )
         locale = get_locale_for_language(args["locale"], default=True)
 
-        # A privacy proxy can hide nested private values, not just entire DB
-        # rows. Keep that authoritative path for restricted users. Owners can
-        # use a single SQL projection that never hydrates complete Gramps
-        # Person/Event/Family objects merely to draw a card and a line.
-        if not isinstance(db, ProxyDbBase):
-            basedb, cte, params = _scope_sql(db, scope)
-            rows = _relationship_graph_rows(
-                basedb, cte, params, _resolve_dialect(basedb)
-            )
-            people = [
-                _person_graph_projection(row, locale)
-                for row in rows
-                if row[0] == "person"
-            ]
-            if not people:
-                abort_with_message(404, f"Person {person} not found")
-            families = {
-                family["handle"]: family
-                for row in rows
-                if row[0] == "family"
-                for family in [_family_graph_projection(row)]
-            }
-            for item in people:
-                item["family_handles"] = item.pop("_family_handles")
-                item["primary_parent_family_handle"] = item.pop(
-                    "_primary_parent_handle"
-                )
-            return self.response(
-                200, {"people": people, "families": list(families.values())}
-            )
-
-        handles = _scope_handles(
-            db,
-            RelationshipScope(
-                person=person,
-                max_degree=args["degree"],
-                direction=args["direction"],
-            ),
-            "persons",
+        include_private = has_permissions({PERM_VIEW_PRIVATE})
+        basedb, cte, params = _scope_sql(db, scope)
+        rows = _relationship_graph_rows(
+            basedb,
+            cte,
+            params,
+            _resolve_dialect(basedb),
+            include_private=include_private,
         )
-        if not handles:
+        people = [
+            _person_graph_projection(row, locale) for row in rows if row[0] == "person"
+        ]
+        if not people:
             abort_with_message(404, f"Person {person} not found")
-        people = []
-        extension_args = {
-            "profile": ["self"],
-            "extend": ["event_ref_list", "primary_parent_family", "family_list"],
+        families = {
+            family["handle"]: family
+            for row in rows
+            if row[0] == "family"
+            for family in [_family_graph_projection(row)]
         }
-        for handle in handles:
-            item = db.get_person_from_handle(handle)
-            if item is not None:
-                people.append(self.object_extend(item, extension_args, locale=locale))
-        return self.response(200, {"people": people})
+        visible_people = {item["handle"] for item in people}
+        visible_families = set(families)
+        for item in people:
+            item["family_handles"] = [
+                handle
+                for handle in item.pop("_family_handles")
+                if handle in visible_families
+            ]
+            parent = item.pop("_primary_parent_handle")
+            item["primary_parent_family_handle"] = (
+                parent if parent in visible_families else ""
+            )
+        for family in families.values():
+            if family["father_handle"] not in visible_people:
+                family["father_handle"] = ""
+            if family["mother_handle"] not in visible_people:
+                family["mother_handle"] = ""
+            family["child_ref_list"] = [
+                ref for ref in family["child_ref_list"] if ref["ref"] in visible_people
+            ]
+        return self.response(
+            200, {"people": people, "families": list(families.values())}
+        )
 
 
-class HomePersonViewResource(
-    ProtectedResource, PersonResourceHelper, GrampsJSONEncoder
-):
+class HomePersonViewResource(ProtectedResource, GrampsJSONEncoder):
     """Indexed home-person lookup with its display profile."""
 
     @api_blueprint.response(200, HomePersonResponse())
@@ -1008,9 +1148,7 @@ class ObjectSummariesViewResource(ProtectedResource, GrampsJSONEncoder):
         )
 
 
-class ConnectionGraphViewResource(
-    ProtectedResource, PersonResourceHelper, GrampsJSONEncoder
-):
+class ConnectionGraphViewResource(ProtectedResource, GrampsJSONEncoder):
     """One SQL-backed shortest connection and its render-ready objects."""
 
     @api_blueprint.response(200, ConnectionGraphResponse())
@@ -1074,20 +1212,21 @@ class ConnectionGraphViewResource(
             steps.reverse()
 
         family_handles = list(dict.fromkeys(step["family_handle"] for step in steps))
-        families = []
-        families_by_handle = {}
-        for handle in family_handles:
-            try:
-                family = db.get_family_from_handle(handle)
-            except HandleError:
-                continue
-            if family is not None:
-                families.append(family)
-                families_by_handle[handle] = family
+        include_private = has_permissions({PERM_VIEW_PRIVATE})
+        family_items = _recent_related_objects(
+            basedb,
+            "family",
+            set(family_handles),
+            include_private=include_private,
+        )
+        families_by_handle = {
+            handle: _family_graph_projection_from_item(item)
+            for handle, item in family_items.items()
+        }
 
         for step in steps:
             family = families_by_handle[step["family_handle"]]
-            step["relationship_type"] = _step_relationship_type(
+            step["relationship_type"] = _projected_step_relationship_type(
                 family,
                 step["from_handle"],
                 step["to_handle"],
@@ -1103,7 +1242,7 @@ class ConnectionGraphViewResource(
             if step["relation"] not in {"child", "parent", "sibling"}:
                 continue
             family = families_by_handle[step["family_handle"]]
-            for handle in (family.get_father_handle(), family.get_mother_handle()):
+            for handle in (family["father_handle"], family["mother_handle"]):
                 if (
                     handle
                     and handle not in path_handle_set
@@ -1112,16 +1251,40 @@ class ConnectionGraphViewResource(
                     person_handles.append(handle)
 
         locale = get_locale_for_language(args["locale"], default=True)
-        people = []
-        for handle in person_handles:
-            try:
-                person = db.get_person_from_handle(handle)
-            except HandleError:
-                continue
-            if person is not None:
-                people.append(
-                    self.object_extend(person, {"profile": ["self"]}, locale=locale)
-                )
+        graph_rows = _selected_graph_rows(
+            db,
+            person_handles,
+            family_handles,
+            include_private=include_private,
+        )
+        people = [
+            _person_graph_projection(row, locale)
+            for row in graph_rows
+            if row[0] == "person"
+        ]
+        visible_people = {person["handle"] for person in people}
+        visible_families = set(families_by_handle)
+        for person in people:
+            person["family_handles"] = [
+                handle
+                for handle in person.pop("_family_handles")
+                if handle in visible_families
+            ]
+            parent = person.pop("_primary_parent_handle")
+            person["primary_parent_family_handle"] = (
+                parent if parent in visible_families else ""
+            )
+        families = []
+        for handle in family_handles:
+            family = families_by_handle[handle]
+            if family["father_handle"] not in visible_people:
+                family["father_handle"] = ""
+            if family["mother_handle"] not in visible_people:
+                family["mother_handle"] = ""
+            family["child_ref_list"] = [
+                ref for ref in family["child_ref_list"] if ref["ref"] in visible_people
+            ]
+            families.append(family)
 
         path = {
             "connected": target_distance >= 0,
@@ -1223,25 +1386,41 @@ JOIN relationship_scope_events AS scoped ON scoped.handle = event.handle
         )
         objects = {"people": [], "families": [], "events": []}
         response_keys = {"person": "people", "family": "families", "event": "events"}
-        getters = {
-            "person": db.get_person_from_handle,
-            "family": db.get_family_from_handle,
-            "event": db.get_event_from_handle,
-        }
         for object_type, handle, raw in basedb.dbapi.fetchall():
-            if isinstance(db, ProxyDbBase):
-                try:
-                    obj = getters[object_type](handle)
-                except HandleError:
-                    continue
-                if obj is None:
-                    continue
-                item = object_to_dict(obj)
-            else:
-                item = json.loads(raw) if isinstance(raw, str) else raw
+            item = _json_fragment(raw, {})
             objects[response_keys[object_type]].append(
                 _map_projection(object_type, item)
             )
         if not objects["people"]:
             abort_with_message(404, f"Person {person} not found")
+        if not has_permissions({PERM_VIEW_PRIVATE}):
+            visible_people = {item["handle"] for item in objects["people"]}
+            visible_families = {item["handle"] for item in objects["families"]}
+            for person_item in objects["people"]:
+                person_item["family_list"] = [
+                    handle
+                    for handle in person_item["family_list"]
+                    if handle in visible_families
+                ]
+            for family in objects["families"]:
+                if family["father_handle"] not in visible_people:
+                    family["father_handle"] = ""
+                if family["mother_handle"] not in visible_people:
+                    family["mother_handle"] = ""
+                family["child_ref_list"] = [
+                    ref
+                    for ref in family["child_ref_list"]
+                    if ref["ref"] in visible_people
+                ]
+            place_handles = {
+                item["place"] for item in objects["events"] if item.get("place")
+            }
+            visible_places = set(
+                _recent_related_objects(
+                    basedb, "place", place_handles, include_private=False
+                )
+            )
+            for event in objects["events"]:
+                if event.get("place") not in visible_places:
+                    event["place"] = ""
         return self.response(200, objects)

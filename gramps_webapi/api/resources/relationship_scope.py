@@ -101,15 +101,45 @@ def compile_relationship_scope(
     event_where, event_params = _table_condition("e", treeid, include_private)
     reference_where_person, reference_person_params = _reference_condition("rp", treeid)
     reference_where_family, reference_family_params = _reference_condition("rf", treeid)
+    person_record_tree = (
+        " AND person_record.treeid = rp.treeid" if treeid is not None else ""
+    )
 
     if dialect == Dialect.SQLITE:
+        child_privacy = (
+            " WHERE COALESCE(json_extract(child.value, '$.private'), 0) = 0"
+            if not include_private
+            else ""
+        )
         children = (
             "SELECT f.handle AS family_handle, f.father_handle, f.mother_handle, "
             "json_extract(child.value, '$.ref') AS child_handle "
             "FROM relationship_visible_families AS f "
             "JOIN json_each(f.json_data, '$.child_ref_list') AS child"
+            f"{child_privacy}"
+        )
+        person_event_privacy = (
+            "AND EXISTS (SELECT 1 FROM json_each("
+            "person_record.json_data, '$.event_ref_list') AS event_ref "
+            "WHERE json_extract(event_ref.value, '$.ref') = rp.ref_handle "
+            "AND COALESCE(json_extract(event_ref.value, '$.private'), 0) = 0)"
+            if not include_private
+            else ""
+        )
+        family_event_privacy = (
+            "AND EXISTS (SELECT 1 FROM json_each("
+            "family.json_data, '$.event_ref_list') AS event_ref "
+            "WHERE json_extract(event_ref.value, '$.ref') = rf.ref_handle "
+            "AND COALESCE(json_extract(event_ref.value, '$.private'), 0) = 0)"
+            if not include_private
+            else ""
         )
     elif dialect == Dialect.POSTGRESQL:
+        child_privacy = (
+            " WHERE NOT COALESCE((child.value ->> 'private')::boolean, false)"
+            if not include_private
+            else ""
+        )
         children = (
             "SELECT f.handle AS family_handle, f.father_handle, f.mother_handle, "
             "child.value ->> 'ref' AS child_handle "
@@ -117,6 +147,23 @@ def compile_relationship_scope(
             "CROSS JOIN LATERAL jsonb_array_elements("
             "COALESCE(f.json_data::jsonb -> 'child_ref_list', '[]'::jsonb)"
             ") AS child(value)"
+            f"{child_privacy}"
+        )
+        person_event_privacy = (
+            "AND EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE("
+            "person_record.json_data::jsonb -> 'event_ref_list', '[]'::jsonb)) "
+            "AS event_ref(value) WHERE event_ref.value ->> 'ref' = rp.ref_handle "
+            "AND NOT COALESCE((event_ref.value ->> 'private')::boolean, false))"
+            if not include_private
+            else ""
+        )
+        family_event_privacy = (
+            "AND EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE("
+            "family.json_data::jsonb -> 'event_ref_list', '[]'::jsonb)) "
+            "AS event_ref(value) WHERE event_ref.value ->> 'ref' = rf.ref_handle "
+            "AND NOT COALESCE((event_ref.value ->> 'private')::boolean, false))"
+            if not include_private
+            else ""
         )
     else:
         raise QueryError(f"relationship scopes do not support dialect {dialect!r}")
@@ -236,9 +283,11 @@ relationship_scope_events AS (
     SELECT DISTINCT rp.ref_handle AS handle
     FROM reference AS rp
     JOIN relationship_scope_persons AS person ON person.handle = rp.obj_handle
+    JOIN person AS person_record
+      ON person_record.handle = person.handle{person_record_tree}
     JOIN event AS e ON e.handle = rp.ref_handle
     WHERE rp.obj_class = 'Person' AND rp.ref_class = 'Event'
-      AND {reference_where_person} AND {event_where}
+      AND {reference_where_person} AND {event_where} {person_event_privacy}
     UNION
     SELECT DISTINCT rf.ref_handle AS handle
     FROM reference AS rf
@@ -248,7 +297,7 @@ relationship_scope_events AS (
       OR participant.handle = family.mother_handle
     JOIN event AS e ON e.handle = rf.ref_handle
     WHERE rf.obj_class = 'Family' AND rf.ref_class = 'Event'
-      AND {reference_where_family} AND {event_where}
+      AND {reference_where_family} AND {event_where} {family_event_privacy}
 )
 """.strip()
     params = (
