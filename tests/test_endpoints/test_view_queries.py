@@ -3,6 +3,7 @@
 import unittest
 
 from gramps_webapi.api.resources.views import RelationshipGraphArgs
+from gramps_webapi.auth.const import ROLE_GUEST, ROLE_MEMBER
 
 from . import BASE_URL, get_test_client
 from .checks import check_requires_token, check_success
@@ -103,6 +104,16 @@ class TestRecentChangesView(unittest.TestCase):
             self.assertIn("gramps_id", item["object"])
             self.assertLessEqual(len(item["object"]), 8)
 
+    def test_guest_and_member_can_load_dashboard(self):
+        for role in (ROLE_GUEST, ROLE_MEMBER):
+            with self.subTest(role=role):
+                result = check_success(
+                    self,
+                    f"{VIEWS_URL}recent-changes?limit=8&since=1",
+                    role=role,
+                )
+                self.assertLessEqual(len(result), 8)
+
     def test_since_can_exclude_all_objects(self):
         result = check_success(
             self, f"{VIEWS_URL}recent-changes?since=9999999999&limit=8"
@@ -147,3 +158,19 @@ class TestObjectSummariesView(unittest.TestCase):
             f"{VIEWS_URL}object-summaries?objects=person:{person['object']['gramps_id']},person:missing&locale=en",
         )
         self.assertEqual([item["handle"] for item in by_id], [PERSON1])
+
+    def test_guest_and_member_can_resolve_tag(self):
+        for role in (ROLE_GUEST, ROLE_MEMBER):
+            with self.subTest(role=role):
+                recent_tags = check_success(
+                    self, f"{VIEWS_URL}recent-changes?limit=1&type=tag", role=role
+                )
+                if not recent_tags:
+                    self.skipTest("Example database contains no tags")
+                tag = recent_tags[0]
+                result = check_success(
+                    self,
+                    f"{VIEWS_URL}object-summaries?objects=tag:{tag['handle']}",
+                    role=role,
+                )
+                self.assertEqual([item["handle"] for item in result], [tag["handle"]])

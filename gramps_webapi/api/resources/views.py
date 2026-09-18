@@ -54,6 +54,8 @@ VIEW_OBJECT_TYPES = (
     "note",
     "tag",
 )
+OBJECT_TYPES_WITH_PRIVACY = frozenset(VIEW_OBJECT_TYPES) - {"tag"}
+OBJECT_TYPES_WITH_GRAMPS_ID = frozenset(VIEW_OBJECT_TYPES) - {"tag"}
 
 
 class RelationshipGraphArgs(Schema):
@@ -333,7 +335,7 @@ def get_recent_changes_view(
         if treeid is not None:
             filters.append("treeid = ?")
             params.append(treeid)
-        if not include_private:
+        if not include_private and object_type in OBJECT_TYPES_WITH_PRIVACY:
             filters.append("private = 0")
         selects.append(
             f"SELECT '{object_type}' AS object_type, handle, change "
@@ -683,15 +685,20 @@ def get_object_summaries_view(
     items: dict[tuple[str, str], dict] = {}
     for object_type, identifiers in grouped.items():
         placeholders = ", ".join("?" for _ in identifiers)
-        params: list[Any] = [*identifiers, *identifiers]
-        filters = [f"(handle IN ({placeholders}) OR gramps_id IN ({placeholders}))"]
+        params: list[Any] = list(identifiers)
+        filters = [f"handle IN ({placeholders})"]
+        gramps_id_column = "NULL AS gramps_id"
+        if object_type in OBJECT_TYPES_WITH_GRAMPS_ID:
+            filters[0] = f"({filters[0]} OR gramps_id IN ({placeholders}))"
+            params.extend(identifiers)
+            gramps_id_column = "gramps_id"
         if treeid is not None:
             filters.append("treeid = ?")
             params.append(treeid)
-        if not include_private:
+        if not include_private and object_type in OBJECT_TYPES_WITH_PRIVACY:
             filters.append("private = 0")
         basedb.dbapi.execute(
-            f"SELECT handle, gramps_id, json_data FROM {object_type} "
+            f"SELECT handle, {gramps_id_column}, json_data FROM {object_type} "
             f"WHERE {' AND '.join(filters)}",
             params,
         )
