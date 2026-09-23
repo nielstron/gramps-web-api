@@ -254,11 +254,11 @@ def _recent_related_objects(
     return {handle: _json_fragment(raw, {}) for handle, raw in basedb.dbapi.fetchall()}
 
 
-def _recent_person_profile(item: dict | None) -> dict:
+def _recent_person_profile(item: dict | None, *, include_private: bool = False) -> dict:
     """Project a person name to the shape used in family result labels."""
     if not item:
         return {}
-    name = _project_name(item.get("primary_name"))
+    name = _project_name(item.get("primary_name"), include_private=include_private)
     return {
         "gramps_id": item.get("gramps_id"),
         "name_given": name.get("first_name") or "",
@@ -273,6 +273,8 @@ def _recent_projection(
     item: dict,
     people: dict[str, dict],
     sources: dict[str, dict],
+    *,
+    include_private: bool = False,
 ) -> dict:
     """Return only the fields rendered by the dashboard's change feed."""
     result = {key: item.get(key) for key in ("handle", "gramps_id", "change")}
@@ -280,7 +282,9 @@ def _recent_projection(
         result.update(
             {
                 "gender": item.get("gender"),
-                "primary_name": _project_name(item.get("primary_name")),
+                "primary_name": _project_name(
+                    item.get("primary_name"), include_private=include_private
+                ),
                 "media_list": [
                     {"ref": ref.get("ref"), "rect": ref.get("rect") or []}
                     for ref in item.get("media_list", [])[:1]
@@ -289,8 +293,12 @@ def _recent_projection(
             }
         )
     elif object_type == "family":
-        father = _recent_person_profile(people.get(item.get("father_handle")))
-        mother = _recent_person_profile(people.get(item.get("mother_handle")))
+        father = _recent_person_profile(
+            people.get(item.get("father_handle")), include_private=include_private
+        )
+        mother = _recent_person_profile(
+            people.get(item.get("mother_handle")), include_private=include_private
+        )
         result["profile"] = {
             key: profile
             for key, profile in (("father", father), ("mother", mother))
@@ -396,7 +404,9 @@ ORDER BY change DESC, object_type, handle
         {
             "handle": handle,
             "object_type": object_type,
-            "object": _recent_projection(object_type, item, people, sources),
+            "object": _recent_projection(
+                object_type, item, people, sources, include_private=include_private
+            ),
         }
         for object_type, handle, _, item in rows
     ]
@@ -412,9 +422,9 @@ def _type_name(value: Any, names: dict[int, str], default: str) -> str:
     return names.get(value.get("value"), default)
 
 
-def _project_name(value: Any) -> dict:
+def _project_name(value: Any, *, include_private: bool = False) -> dict:
     name = _json_fragment(value, {})
-    if not name or name.get("private"):
+    if not name or (name.get("private") and not include_private):
         return {}
     name = {
         key: name.get(key)
@@ -459,7 +469,9 @@ def _surname(name: dict) -> str:
     )
 
 
-def _person_graph_projection(row: tuple, locale: Any) -> dict:
+def _person_graph_projection(
+    row: tuple, locale: Any, *, include_private: bool = False
+) -> dict:
     """Build the compact person shape consumed by relationship cards."""
     (
         _,
@@ -475,11 +487,11 @@ def _person_graph_projection(row: tuple, locale: Any) -> dict:
         death_raw,
         *_,
     ) = row
-    primary = _project_name(primary_raw)
+    primary = _project_name(primary_raw, include_private=include_private)
     alternates = [
         projected
         for value in _json_fragment(alternates_raw, [])
-        if (projected := _project_name(value))
+        if (projected := _project_name(value, include_private=include_private))
     ]
     media = _json_fragment(media_raw, {})
     media_list = []
@@ -700,7 +712,7 @@ LIMIT 1
 def get_person_card_summaries(
     db: Any, handles: list[str], locale: Any
 ) -> dict[str, dict]:
-    """Fetch the fields used by person picker/search cards in one SQL query."""
+    """Fetch person cards and their visible primary portraits with indexed portrait metadata in one SQL query."""
     if not handles:
         return {}
     basedb = _base_db(db)
@@ -713,10 +725,20 @@ def get_person_card_summaries(
         primary = "json_extract(person.json_data, '$.primary_name')"
         birth_date = "json_extract(birth_event.json_data, '$.date')"
         place_name = "json_extract(place.json_data, '$.name.value')"
+        primary_media = "json_extract(person.json_data, '$.media_list[0]')"
+        media_handle = "json_extract(person.json_data, '$.media_list[0].ref')"
+        media_checksum = "json_extract(media.json_data, '$.checksum')"
+        media_ref_visible = (
+            "COALESCE(json_extract(person.json_data, '$.media_list[0].private'), 0) = 0"
+        )
     else:
         primary = "person.json_data::jsonb -> 'primary_name'"
         birth_date = "birth_event.json_data::jsonb -> 'date'"
         place_name = "place.json_data::jsonb #>> '{name,value}'"
+        primary_media = "person.json_data::jsonb -> 'media_list' -> 0"
+        media_handle = "person.json_data::jsonb #>> '{media_list,0,ref}'"
+        media_checksum = "media.json_data::jsonb ->> 'checksum'"
+        media_ref_visible = "NOT COALESCE((person.json_data::jsonb #>> '{media_list,0,private}')::boolean, false)"
     birth_ref = _person_event_ref_sql(
         dialect, "birth", treeid, include_private=include_private
     )
@@ -731,11 +753,16 @@ def get_person_card_summaries(
     privacy_person = "" if include_private else " AND person.private = 0"
     privacy_event = "" if include_private else " AND birth_event.private = 0"
     privacy_place = "" if include_private else " AND place.private = 0"
+    media_join_tree = " AND media.treeid = person.treeid" if treeid is not None else ""
+    media_privacy = (
+        "" if include_private else f" AND media.private = 0 AND {media_ref_visible}"
+    )
     basedb.dbapi.execute(
         f"""
 SELECT person.handle, person.gramps_id, person.gender, person.change,
-       {primary}, {birth_date}, {place_name}
+       {primary}, {birth_date}, {place_name}, {primary_media}, media.handle, {media_checksum}
 FROM person
+LEFT JOIN media ON media.handle = {media_handle}{media_join_tree}{media_privacy}
 LEFT JOIN event AS birth_event
   ON birth_event.handle = {birth_ref}{tree_event}{privacy_event}
 LEFT JOIN place
@@ -753,17 +780,22 @@ WHERE person.handle IN ({placeholders}){tree_person}{privacy_person}
         primary_raw,
         birth_raw,
         place,
+        media_raw,
+        visible_media_handle,
+        checksum,
     ) in basedb.dbapi.fetchall():
-        name = _project_name(primary_raw)
+        name = _project_name(primary_raw, include_private=include_private)
         birth = _project_date(birth_raw, locale)
         if place:
             birth["place_name"] = place
+        media_ref = _json_fragment(media_raw, {})
         result[handle] = {
             "handle": handle,
             "gramps_id": gramps_id,
             "gender": gender,
             "change": change,
             "primary_name": name,
+            "media_list": [],
             "profile": {
                 "handle": handle,
                 "gramps_id": gramps_id,
@@ -775,6 +807,13 @@ WHERE person.handle IN ({placeholders}){tree_person}{privacy_person}
                 "name_title": name.get("title") or "",
             },
         }
+        if visible_media_handle:
+            result[handle]["media_list"] = [
+                {"ref": visible_media_handle, "rect": media_ref.get("rect") or []}
+            ]
+            result[handle]["extended"] = {
+                "media": [{"handle": visible_media_handle, "checksum": checksum}]
+            }
     return result
 
 
@@ -848,7 +887,7 @@ def get_object_summaries_view(
             continue
         handle = item.get("handle")
         projection = person_summaries.get(handle) or _recent_projection(
-            object_type, item, people, sources
+            object_type, item, people, sources, include_private=include_private
         )
         result.append(
             {"handle": handle, "object_type": object_type, "object": projection}
@@ -1020,7 +1059,7 @@ LIMIT 1
     row = basedb.dbapi.fetchone()
     if row is None:
         return None
-    result = _person_graph_projection(row, locale)
+    result = _person_graph_projection(row, locale, include_private=include_private)
     result.pop("_family_handles")
     result.pop("_primary_parent_handle")
     return result
@@ -1063,7 +1102,9 @@ class RelationshipGraphViewResource(ProtectedResource, GrampsJSONEncoder):
             include_private=include_private,
         )
         people = [
-            _person_graph_projection(row, locale) for row in rows if row[0] == "person"
+            _person_graph_projection(row, locale, include_private=include_private)
+            for row in rows
+            if row[0] == "person"
         ]
         if not people:
             abort_with_message(404, f"Person {person} not found")
@@ -1260,7 +1301,7 @@ class ConnectionGraphViewResource(ProtectedResource, GrampsJSONEncoder):
             include_private=include_private,
         )
         people = [
-            _person_graph_projection(row, locale)
+            _person_graph_projection(row, locale, include_private=include_private)
             for row in graph_rows
             if row[0] == "person"
         ]
