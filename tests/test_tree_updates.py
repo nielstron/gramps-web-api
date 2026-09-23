@@ -31,7 +31,8 @@ def app():
     )
     JWTManager(app)
     app.add_url_rule("/updates", view_func=TreeUpdatesResource.as_view("updates"))
-    return app
+    with patch("gramps_webapi.api.tree_updates.get_actor_name", return_value="Alex"):
+        yield app
 
 
 def payload(event):
@@ -49,7 +50,8 @@ def test_push_and_reconnect_without_database_polling(app):
         publish_tree_update("tree1", "user2")
     event = payload(next(stream))
     assert event["own"] is False
-    assert set(event) == {"revision", "own"}
+    assert event["actor_name"] == "Alex"
+    assert event["changes"] == []
     assert broker.xlen(stream_key("tree2")) == 0
     stream.close()
     reconnect = tree_event_stream(broker, "tree1", "user1", time.time() + 60)
@@ -109,6 +111,7 @@ def test_stream_requires_auth_and_uses_token_tree(app):
 
 def test_publish_after_database_and_undo_log_close(app):
     db = Mock(readonly=False)
+    db.undodb.change_summary.return_value = []
     db.get_save_path.return_value = "/trees/tree1"
     calls = []
     db.close.side_effect = lambda: calls.append("db closed")
@@ -119,7 +122,7 @@ def test_publish_after_database_and_undo_log_close(app):
     ):
         publish.side_effect = lambda *args: calls.append("published")
         close_db(db)
-        publish.assert_called_once_with("tree1", db.undodb.user_id)
+        publish.assert_called_once_with("tree1", db.undodb.user_id, [])
     assert calls == ["db closed", "undo closed", "published"]
 
 
@@ -148,3 +151,21 @@ def test_uses_existing_celery_redis_and_can_be_disabled(app):
         assert tree_updates_url() == "redis://broker/1"
         app.config["TREE_UPDATES_REDIS_URL"] = ""
         assert tree_updates_url() is None
+
+
+def test_change_summary_permission_and_reconnect(app):
+    broker = fakeredis.FakeRedis(decode_responses=True)
+    changes = [{"type": "Source", "action": 1, "count": 1}]
+    with (
+        app.app_context(),
+        patch("gramps_webapi.api.tree_updates.event_broker", return_value=broker),
+    ):
+        publish_tree_update("tree1", "user2", changes)
+    for include_private in (False, True):
+        stream = tree_event_stream(
+            broker, "tree1", "user1", time.time() + 60, include_private=include_private
+        )
+        ready = payload(next(stream))
+        assert ready["actor_name"] == "Alex"
+        assert ready["changes"] == (changes if include_private else [])
+        stream.close()

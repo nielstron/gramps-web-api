@@ -101,6 +101,12 @@ class TestUndoHistory(unittest.TestCase):
         obj = obj_class()
         add_func(obj, trans)
 
+    def test_change_summary_counts_primary_objects(self):
+        summary = self.db.undodb.change_summary()
+        self.assertEqual(len(summary), 10)
+        self.assertEqual(sum(item["count"] for item in summary), 100)
+        self.assertIn({"type": "Person", "action": 0, "count": 10}, summary)
+
     def _get_history_table(self, table_name):
         """Get a table from the history database."""
         dbundo = self.db.get_undodb()

@@ -496,12 +496,19 @@ def close_db(db_handle: DbReadBase) -> None:
         if isinstance(db_handle, ProxyDbBase)
         else db_handle.undodb
     )
+    from .tree_updates import tree_updates_url
+
+    summary = (
+        undo.change_summary()
+        if writable and has_app_context() and tree_updates_url()
+        else []
+    )
     db_handle.close()
     undo.close()
     if writable and has_app_context():
         from .tree_updates import publish_tree_update
 
-        publish_tree_update(tree, undo.user_id)
+        publish_tree_update(tree, undo.user_id, summary)
 
 
 def get_db_handle(readonly: bool = True) -> DbReadBase:

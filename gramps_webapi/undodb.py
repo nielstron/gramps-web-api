@@ -358,6 +358,38 @@ class DbUndoSQL(DbUndo):
             session.commit()
             return new_connection.id
 
+    def change_summary(self) -> list[dict]:
+        """Count primary-object changes in this connection without loading records."""
+        if self._connection_id is None:
+            return []
+        with self.session_scope() as session:
+            rows = (
+                session.query(Change.obj_class, Change.trans_type, func.count())
+                .filter(Change.connection_id == self._connection_id)
+                .filter(
+                    Change.obj_class.in_(
+                        [
+                            "Person",
+                            "Family",
+                            "Event",
+                            "Place",
+                            "Source",
+                            "Citation",
+                            "Repository",
+                            "Media",
+                            "Note",
+                            "Tag",
+                        ]
+                    )
+                )
+                .group_by(Change.obj_class, Change.trans_type)
+                .all()
+            )
+        return [
+            {"type": kind, "action": action, "count": count}
+            for kind, action, count in rows
+        ]
+
     def close(self) -> None:
         """Close the backing storage."""
         self.engine.dispose()

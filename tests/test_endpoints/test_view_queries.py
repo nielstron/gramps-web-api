@@ -119,6 +119,33 @@ class TestHomePersonView(unittest.TestCase):
         self.assertIn("profile", result["person"])
 
 
+class TestAncestorOfTheDayView(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.client = get_test_client()
+
+    def test_requires_token(self):
+        check_requires_token(
+            self, f"{VIEWS_URL}ancestor-of-the-day/{PERSON1}?date=2026-09-23"
+        )
+
+    def test_guest_and_member_receive_stable_compact_ancestor(self):
+        for role in (ROLE_GUEST, ROLE_MEMBER):
+            url = f"{VIEWS_URL}ancestor-of-the-day/01LKQC3FMJR76T7IMG?date=2026-09-23&locale=en"
+            result = check_success(self, url, role=role)
+            self.assertEqual(result, check_success(self, url, role=role))
+            self.assertIsNotNone(result["person"])
+            self.assertNotEqual(result["person"]["handle"], PERSON1)
+            self.assertIn("profile", result["person"])
+            self.assertNotIn("event_ref_list", result["person"])
+
+    def test_missing_person_returns_empty_card(self):
+        result = check_success(
+            self, f"{VIEWS_URL}ancestor-of-the-day/missing?date=2026-09-23"
+        )
+        self.assertIsNone(result["person"])
+
+
 class TestMapScopeView(unittest.TestCase):
     """Map scopes remain SQL-projected for restricted viewers."""
 

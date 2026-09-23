@@ -191,6 +191,7 @@ from .resources.views import (
     AnniversariesViewResource,
     ConnectionGraphViewResource,
     HomePersonViewResource,
+    AncestorOfTheDayViewResource,
     MapScopeViewResource,
     ObjectSummariesViewResource,
     RecentChangesViewResource,
@@ -706,6 +707,12 @@ register_endpt(
     RelationshipGraphViewResource,
     "/views/relationship-graph/<string:person>",
     "view-relationship-graph",
+    tags=["Views"],
+)
+register_endpt(
+    AncestorOfTheDayViewResource,
+    "/views/ancestor-of-the-day/<string:person>",
+    "view-ancestor-of-the-day",
     tags=["Views"],
 )
 register_endpt(

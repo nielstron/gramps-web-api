@@ -395,3 +395,41 @@ ORDER BY kind, distance, family_handle, from_handle, handle
         sql,
         params + [source, source, target, target],
     )
+
+
+def compile_primary_ancestors_query(
+    person: str, *, dialect: Dialect, treeid: Optional[int], include_private: bool
+) -> tuple[str, list[Any]]:
+    """All direct ancestors through primary families, deduplicated and cycle safe."""
+    cte, params = compile_relationship_scope(
+        RelationshipScope(person, max_degree=0, direction="ancestors"),
+        dialect=dialect,
+        treeid=treeid,
+        include_private=include_private,
+    )
+    primary = (
+        "json_extract(p.json_data, '$.parent_family_list[0]')"
+        if dialect == Dialect.SQLITE
+        else "p.json_data::jsonb #>> '{parent_family_list,0}'"
+    )
+    tree_where = "WHERE p.treeid = ?" if treeid is not None else ""
+    sql = f"""
+{cte},
+primary_edges AS (
+    SELECT edge.from_handle, edge.to_handle
+    FROM relationship_edges AS edge
+    JOIN person AS p ON p.handle = edge.from_handle
+       AND edge.family_handle = {primary}
+    {tree_where}
+),
+ancestors(handle) AS (
+    SELECT handle FROM relationship_scope_persons
+    UNION
+    SELECT edge.to_handle FROM ancestors
+    JOIN primary_edges AS edge ON edge.from_handle = ancestors.handle
+)
+SELECT handle FROM ancestors
+WHERE handle NOT IN (SELECT handle FROM relationship_scope_persons)
+ORDER BY handle
+"""
+    return sql, params + ([treeid] if treeid is not None else [])

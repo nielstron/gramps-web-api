@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from hashlib import sha256
 from collections import deque
 from datetime import date
 from typing import Any
@@ -24,6 +25,7 @@ from .object_query import _resolve_dialect, _resolve_treeid
 from .relationship_scope import (
     RelationshipScope,
     compile_connection_path_query,
+    compile_primary_ancestors_query,
     compile_relationship_scope,
 )
 from .schemas import (
@@ -1424,3 +1426,54 @@ JOIN relationship_scope_events AS scoped ON scoped.handle = event.handle
                 if event.get("place") not in visible_places:
                     event["place"] = ""
         return self.response(200, objects)
+
+
+class AncestorOfTheDayArgs(ConnectionGraphArgs):
+    date = fields.Date(required=True)
+
+
+def daily_ancestor(handles: list[str], day: date, person: str) -> str | None:
+    """Stable date-based ranking, independent of query order and Python hash seed."""
+    return min(
+        handles,
+        key=lambda handle: sha256(
+            f"{day.isoformat()}:{person}:{handle}".encode()
+        ).digest(),
+        default=None,
+    )
+
+
+class AncestorOfTheDayViewResource(ProtectedResource, GrampsJSONEncoder):
+    """A personalized daily card without fetching the full ancestry graph."""
+
+    @api_blueprint.response(200, HomePersonResponse())
+    @api_blueprint.arguments(AncestorOfTheDayArgs, location="query")
+    @request_cache_decorator
+    def get(self, args: dict, person: str) -> Response:
+        db = get_db_handle()
+        basedb = _base_db(db)
+        include_private = has_permissions({PERM_VIEW_PRIVATE})
+        locale = get_locale_for_language(args["locale"], default=True)
+        home = _home_person_projection(
+            db, person, locale, include_private=include_private
+        )
+        if home is None:
+            return self.response(200, {"person": None})
+        sql, params = compile_primary_ancestors_query(
+            home["handle"],
+            dialect=_resolve_dialect(basedb),
+            treeid=_resolve_treeid(basedb),
+            include_private=include_private,
+        )
+        basedb.dbapi.execute(sql, params)
+        selected = daily_ancestor(
+            [row[0] for row in basedb.dbapi.fetchall()], args["date"], home["handle"]
+        )
+        ancestor = (
+            _home_person_projection(
+                db, selected, locale, include_private=include_private
+            )
+            if selected
+            else None
+        )
+        return self.response(200, {"person": ancestor})
