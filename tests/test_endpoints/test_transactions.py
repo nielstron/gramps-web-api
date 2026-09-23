@@ -80,6 +80,77 @@ class TestTransactionResource(unittest.TestCase):
     def tearDownClass(cls):
         cls.dbman.remove_database(cls.name)
 
+    def test_publishing_saved_blog_draft_stamps_and_preserves_publication(self):
+        headers = get_headers(self.client, "editor", "123")
+        with patch.dict(
+            self.app.config, {"VECTOR_EMBEDDING_MODEL": "", "LLM_MODEL": ""}
+        ):
+            tag_response = self.client.post(
+                "/api/tags/", json={"name": "Blog"}, headers=headers
+            )
+            self.assertEqual(tag_response.status_code, 201, tag_response.json)
+            tag = tag_response.json[0]["new"]["handle"]
+            created = self.client.post(
+                "/api/sources/",
+                json={"title": "Saved draft", "private": True},
+                headers=headers,
+            )
+            self.assertEqual(created.status_code, 201, created.json)
+            handle = created.json[0]["new"]["handle"]
+
+            def read():
+                return self.client.get(f"/api/sources/{handle}", headers=headers).json
+
+            def save(old, new):
+                response = self.client.post(
+                    "/api/transactions/?simplified=1",
+                    json=[
+                        {
+                            "type": "update",
+                            "_class": "Source",
+                            "handle": handle,
+                            "old": old,
+                            "new": new,
+                        }
+                    ],
+                    headers=headers,
+                )
+                self.assertEqual(response.status_code, 200, response.json)
+                return read()
+
+            def dates(post):
+                return [
+                    a["value"]
+                    for a in post["attribute_list"]
+                    if a["type"] == "Blog publication date"
+                ]
+
+            try:
+                draft = read()
+                self.assertEqual(dates(draft), [])
+                draft = save(draft, {**draft, "title": "Edited draft"})
+                self.assertEqual(dates(draft), [])
+                published = save(draft, {**draft, "private": False, "tag_list": [tag]})
+                publication = dates(published)
+                self.assertEqual(len(publication), 1)
+                edited = save(
+                    published,
+                    {**published, "title": "Updated post", "attribute_list": []},
+                )
+                self.assertEqual(dates(edited), publication)
+                unpublished = save(edited, {**edited, "private": True, "tag_list": []})
+                republished = save(
+                    unpublished, {**unpublished, "private": False, "tag_list": [tag]}
+                )
+                self.assertEqual(dates(republished), publication)
+                newest = self.client.get(
+                    "/api/sources/?sort=-publication&pagesize=1", headers=headers
+                )
+                self.assertEqual(newest.json[0]["handle"], handle)
+            finally:
+                self.client.delete(f"/api/sources/{handle}", headers=headers)
+                self.client.delete(f"/api/tags/{tag}", headers=headers)
+
     def test_simplified_blog_transaction_and_conflict(self):
         headers = get_headers(self.client, "editor", "123")
         created = self.client.post(

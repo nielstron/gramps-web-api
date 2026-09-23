@@ -42,6 +42,7 @@ from werkzeug.exceptions import HTTPException
 from gramps_webapi.api.search.indexer import SearchIndexer, SemanticSearchIndexer
 
 from ..auth import TaskTree, get_owner_emails, user_db
+from ..blog import ensure_publication_date
 from ..undodb import migrate as migrate_undodb
 from ..verify_lib import run_verify
 from .check import check_database
@@ -817,6 +818,19 @@ def process_transactions(
                         if simplified:
                             new_data = fix_object_dict(new_data, class_name)
                         new_obj = gramps_object_from_dict(new_data)
+                        if (
+                            simplified
+                            and class_name == "Source"
+                            and trans_type in {"add", "update"}
+                        ):
+                            # The blog editor publishes saved drafts through this path.
+                            # Raw history replay must retain its exact stored metadata.
+                            old_source = (
+                                db_handle.get_source_from_handle(handle)
+                                if trans_type == "update"
+                                else None
+                            )
+                            ensure_publication_date(db_handle, new_obj, old_source)
                         if simplified and trans_type == "add" and not new_obj.gramps_id:
                             new_obj.gramps_id = db_handle.method(
                                 "find_next_%s_gramps_id", class_name
