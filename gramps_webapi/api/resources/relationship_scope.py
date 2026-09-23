@@ -400,36 +400,60 @@ ORDER BY kind, distance, family_handle, from_handle, handle
 def compile_primary_ancestors_query(
     person: str, *, dialect: Dialect, treeid: Optional[int], include_private: bool
 ) -> tuple[str, list[Any]]:
-    """All direct ancestors through primary families, deduplicated and cycle safe."""
-    cte, params = compile_relationship_scope(
-        RelationshipScope(person, max_degree=0, direction="ancestors"),
-        dialect=dialect,
-        treeid=treeid,
-        include_private=include_private,
-    )
-    primary = (
-        "json_extract(p.json_data, '$.parent_family_list[0]')"
-        if dialect == Dialect.SQLITE
-        else "p.json_data::jsonb #>> '{parent_family_list,0}'"
-    )
-    tree_where = "WHERE p.treeid = ?" if treeid is not None else ""
+    """Walk indexed primary families only; UNION deduplicates ancestors and cycles."""
+    root_where, root_params = _table_condition("root", treeid, include_private)
+    child_where, child_params = _table_condition("child", treeid, include_private)
+    family_where, family_params = _table_condition("family", treeid, include_private)
+    parent_where, parent_params = _table_condition("parent", treeid, include_private)
+    if dialect == Dialect.SQLITE:
+        primary = "json_extract(child.json_data, '$.parent_family_list[0]')"
+        visible_ref = (
+            ""
+            if include_private
+            else """
+            AND EXISTS (SELECT 1 FROM json_each(family.json_data, '$.child_ref_list') AS ref
+                WHERE json_extract(ref.value, '$.ref') = child.handle
+                AND COALESCE(json_extract(ref.value, '$.private'), 0) = 0)
+        """
+        )
+    elif dialect == Dialect.POSTGRESQL:
+        primary = "child.json_data::jsonb #>> '{parent_family_list,0}'"
+        visible_ref = (
+            ""
+            if include_private
+            else """
+            AND EXISTS (SELECT 1 FROM jsonb_array_elements(
+                COALESCE(family.json_data::jsonb -> 'child_ref_list', '[]'::jsonb)) AS ref(value)
+                WHERE ref.value ->> 'ref' = child.handle
+                AND NOT COALESCE((ref.value ->> 'private')::boolean, false))
+        """
+        )
+    else:
+        raise QueryError(f"ancestor scopes do not support dialect {dialect!r}")
     sql = f"""
-{cte},
-primary_edges AS (
-    SELECT edge.from_handle, edge.to_handle
-    FROM relationship_edges AS edge
-    JOIN person AS p ON p.handle = edge.from_handle
-       AND edge.family_handle = {primary}
-    {tree_where}
+WITH RECURSIVE
+parent_slots(slot) AS (VALUES (0), (1)),
+root_person AS (
+    SELECT root.handle FROM person AS root
+    WHERE (root.handle = ? OR root.gramps_id = ?) AND {root_where}
 ),
 ancestors(handle) AS (
-    SELECT handle FROM relationship_scope_persons
+    SELECT handle FROM root_person
     UNION
-    SELECT edge.to_handle FROM ancestors
-    JOIN primary_edges AS edge ON edge.from_handle = ancestors.handle
+    SELECT parent.handle
+    FROM ancestors
+    JOIN person AS child ON child.handle = ancestors.handle
+    JOIN family ON family.handle = {primary}
+    CROSS JOIN parent_slots
+    JOIN person AS parent ON parent.handle =
+        CASE parent_slots.slot WHEN 0 THEN family.father_handle ELSE family.mother_handle END
+    WHERE {child_where} AND {family_where} AND {parent_where} {visible_ref}
 )
 SELECT handle FROM ancestors
-WHERE handle NOT IN (SELECT handle FROM relationship_scope_persons)
+WHERE handle NOT IN (SELECT handle FROM root_person)
 ORDER BY handle
 """
-    return sql, params + ([treeid] if treeid is not None else [])
+    return (
+        sql,
+        [person, person] + root_params + child_params + family_params + parent_params,
+    )
