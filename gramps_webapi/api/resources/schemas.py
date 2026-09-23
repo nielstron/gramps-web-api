@@ -2211,6 +2211,9 @@ class ThumbnailSupportSchema(_Base):
 class ServerSchema(_Base):
     """Server capabilities and configuration relevant to clients."""
 
+    tree_updates = fields.Bool(
+        metadata={"description": "Server-sent tree updates are available."}
+    )
     multi_tree = fields.Bool(
         metadata={"description": "Whether the server hosts multiple family trees."},
     )

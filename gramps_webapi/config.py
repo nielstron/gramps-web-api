@@ -80,6 +80,8 @@ class DefaultConfig(object):
     IGNORE_DB_LOCK = False
     TREE_ID = ""
     CELERY_CONFIG: Dict[str, str] = {}
+    TREE_UPDATES_ENABLED = False  # requires concurrent WSGI workers for SSE
+    TREE_UPDATES_REDIS_URL = None  # defaults to the Redis Celery broker
     MEDIA_BASE_DIR = ""
     MEDIA_PREFIX_TREE = False
     REPORT_DIR = str(Path.cwd() / "report_cache")

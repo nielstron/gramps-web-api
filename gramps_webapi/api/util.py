@@ -489,11 +489,19 @@ def get_db_outside_request(
 
 def close_db(db_handle: DbReadBase) -> None:
     """Close the connection to the database including the undo log."""
+    writable = not db_handle.readonly
+    tree = os.path.basename(db_handle.get_save_path()) if writable else None
+    undo = (
+        db_handle.basedb.undodb
+        if isinstance(db_handle, ProxyDbBase)
+        else db_handle.undodb
+    )
     db_handle.close()
-    if isinstance(db_handle, ProxyDbBase):
-        db_handle.basedb.undodb.close()
-    else:
-        db_handle.undodb.close()
+    undo.close()
+    if writable and has_app_context():
+        from .tree_updates import publish_tree_update
+
+        publish_tree_update(tree, undo.user_id)
 
 
 def get_db_handle(readonly: bool = True) -> DbReadBase:

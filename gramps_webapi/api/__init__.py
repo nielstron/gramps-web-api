@@ -96,6 +96,7 @@ from .resources.merge import (
     MergeSourceResource,
 )
 from .resources.metadata import MetadataResearcherResource, MetadataResource
+from .resources.tree_updates import TreeUpdatesResource
 from .resources.name_formats import NameFormatsResource
 from .resources.name_groups import NameGroupsResource
 from .resources.notes import NoteResource, NotesResource
@@ -814,6 +815,7 @@ register_endpt(
 register_endpt(HolidaysResource, "/holidays/", "holidays", tags=["Holidays"])
 # Metadata
 register_endpt(MetadataResource, "/metadata/", "metadata", tags=["Metadata"])
+register_endpt(TreeUpdatesResource, "/tree/updates/", "tree_updates", tags=["Metadata"])
 register_endpt(
     MetadataResearcherResource,
     "/metadata/researcher/",

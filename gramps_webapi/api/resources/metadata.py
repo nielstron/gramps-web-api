@@ -45,6 +45,7 @@ from ...dbmanager import WebDbManager
 from ..auth import has_permissions, require_permissions
 from ..blueprint import api_blueprint
 from ..deprecations import check_deprecations
+from ..tree_updates import tree_updates_url
 from ..search import (
     _get_search_index_db_url,
     get_search_indexer,
@@ -272,6 +273,7 @@ class MetadataResource(ProtectedResource, GrampsJSONEncoder):
             "server": {
                 "multi_tree": is_multi_tree,
                 "task_queue": has_task_queue,
+                "tree_updates": bool(tree_updates_url()),
                 "ocr": has_ocr,
                 "ocr_languages": ocr_languages,
                 "semantic_search": has_semantic_search,
