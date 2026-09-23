@@ -98,11 +98,16 @@ def image_square(image: ImageType) -> ImageType:
     )
 
 
-def crop_image(image: ImageType, x1: int, y1: int, x2: int, y2: int) -> ImageType:
+def crop_image(
+    image: ImageType, x1: int, y1: int, x2: int, y2: int, square: bool = False
+) -> ImageType:
     """Crop an image.
 
     The arguments `x1`, `y1`, `x2`, `y2` are the coordinates of the cropped region
     in percent.
+
+    Square portraits expand the selection using the surrounding image, rather
+    than cutting away its longer dimension. Keep the square inside the image.
     """
     # Apply EXIF orientation before cropping so that the percentage coordinates
     # (which are defined in display/viewing space) map to the correct pixels.
@@ -113,6 +118,11 @@ def crop_image(image: ImageType, x1: int, y1: int, x2: int, y2: int) -> ImageTyp
     x2_abs = x2 * width / 100
     y1_abs = y1 * height / 100
     y2_abs = y2 * height / 100
+    if square:
+        side = round(min(max(x2_abs - x1_abs, y2_abs - y1_abs), width, height))
+        left = round(min(max((x1_abs + x2_abs - side) / 2, 0), width - side))
+        top = round(min(max((y1_abs + y2_abs - side) / 2, 0), height - side))
+        return image.crop((left, top, left + side, top + side))
     return image.crop((x1_abs, y1_abs, x2_abs, y2_abs))
 
 
@@ -183,12 +193,10 @@ class ThumbnailHandler:
         The arguments `x1`, `y1`, `x2`, `y2` are the coordinates of the cropped region
         in terms of the original image's coordinate system.
 
-        If `square` is true, the image is additionally cropped to a centered square.
+        If `square` is true, expand to a square using the surrounding image.
         """
         img = self.get_image()
-        img = crop_image(img, x1, y1, x2, y2)
-        if square:
-            img = image_square(img)
+        img = crop_image(img, x1, y1, x2, y2, square=square)
         return save_image_buffer(img, fmt=fmt)
 
     def _get_image_pdf(self, size: int = 2000) -> ImageType:
@@ -285,10 +293,10 @@ class ThumbnailHandler:
         The arguments `x1`, `y1`, `x2`, `y2` are the coordinates of the cropped region
         in terms of the original image's coordinate system.
 
-        If `square` is true, the image is cropped to a centered square.
+        If `square` is true, expand to a square using the surrounding image.
         """
         img = self.get_image()
-        img = crop_image(img, x1, y1, x2, y2)
+        img = crop_image(img, x1, y1, x2, y2, square=square)
         img = image_thumbnail(image=img, size=size, square=square)
         return save_image_buffer(img, fmt=fmt)
 

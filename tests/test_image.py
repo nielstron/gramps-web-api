@@ -274,3 +274,45 @@ def test_file_max_pillow_image_pixels_incorrect():
     with pytest.raises(HTTPException) as exc_info:
         fh.get_image()
     assert exc_info.value.code == 413
+
+
+@pytest.mark.parametrize("thumbnail", [False, True])
+def test_square_face_crop_keeps_top_and_bottom_of_selection(thumbnail):
+    from PIL import ImageDraw
+
+    image = Image.new("RGB", (200, 200), "white")
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((80, 40, 119, 159), fill="red")
+    draw.rectangle((80, 40, 119, 49), fill="green")
+    draw.rectangle((80, 150, 119, 159), fill="blue")
+    stream = io.BytesIO()
+    image.save(stream, format="PNG")
+    stream.seek(0)
+    handler = ThumbnailHandler(stream, "image/png")
+    kwargs = dict(x1=40, y1=20, x2=60, y2=80, square=True, fmt="PNG")
+    result = (
+        handler.get_thumbnail_cropped(size=120, **kwargs)
+        if thumbnail
+        else handler.get_cropped(**kwargs)
+    )
+    output = Image.open(result)
+    assert output.size == (120, 120)
+    assert output.getpixel((60, 5)) == (0, 128, 0)
+    assert output.getpixel((60, 115)) == (0, 0, 255)
+    assert output.getpixel((5, 60)) == (255, 255, 255)
+
+
+def test_square_face_crop_stays_inside_image_at_edge():
+    from gramps_webapi.api.image import crop_image
+
+    image = Image.new("RGB", (200, 100), "white")
+    output = crop_image(image, 0, 0, 10, 60, square=True)
+    assert output.size == (60, 60)
+    assert output.getextrema() == ((255, 255), (255, 255), (255, 255))
+
+
+def test_rectangular_crop_preserves_explicit_selection():
+    from gramps_webapi.api.image import crop_image
+
+    output = crop_image(Image.new("RGB", (200, 200)), 40, 20, 60, 80)
+    assert output.size == (40, 120)
